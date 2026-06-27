@@ -1,0 +1,45 @@
+services:
+  - type: web
+    name: dash-backend
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: PG_SSL
+        value: "true"
+      - key: APP_URL
+        sync: false
+      - key: API_URL
+        sync: false
+      - key: CORS_ORIGIN
+        sync: false
+      - key: JWT_ACCESS_SECRET
+        generateValue: true
+      - key: ACCESS_TTL_SECONDS
+        value: "900"
+      - key: REFRESH_TTL_SECONDS
+        value: "2592000"
+      - key: REFRESH_COOKIE_NAME
+        value: dash_rt
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: STRIPE_PRICE_PRO
+        sync: false
+      - key: TRIAL_DAYS
+        value: "7"
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
