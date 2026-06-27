@@ -1,10 +1,23 @@
 # Dash — Backend (Render + Neon, auth próprio)
 
 Backend de produção para o Dash: **auth próprio** (JWT access + refresh rotativo, bcrypt),
-**Stripe** (checkout, portal, webhook idempotente) e **ferramenta paga gateada** (narrativa Gemini).
+**Asaas** (checkout hospedado, cancelamento, webhook idempotente) com **3 tiers de plano**
+(`free` / `essencial` / `pro`) e **ferramenta paga gateada com quota mensal de IA** (narrativa Gemini).
 Sem Supabase. Banco em **Neon**, deploy em **Render**.
 
-Stack: Node 20+, TypeScript strict, Express 5, `pg` (pool raw), zod, jsonwebtoken, bcryptjs, stripe, helmet.
+Stack: Node 20+, TypeScript strict, Express 5, `pg` (pool raw), zod, jsonwebtoken, bcryptjs, helmet.
+Pagamentos via **Asaas** (REST, sem SDK).
+
+## Planos (fonte da verdade: `src/plans.ts`)
+
+| Plano | IA/mês | maxRows | export | shareLinks | sem marca | R$/mês |
+|---|---|---|---|---|---|---|
+| `free` | 3 | 5.000 | ✗ | ✗ | ✗ | 0 |
+| `essencial` | 50 | 100.000 | ✓ | ✗ | ✗ | 29,90 |
+| `pro` | 300 | 1.000.000 | ✓ | ✓ | ✓ | 49,90 |
+
+Os limites e valores de cobrança saem **só** de `src/plans.ts` — não de env. O gate é por
+nível (`rank`): `requirePlan('essencial')` libera qualquer pago; `requirePlan('pro')` só Pro.
 
 ## Rotas
 
@@ -18,11 +31,11 @@ Stack: Node 20+, TypeScript strict, Express 5, `pg` (pool raw), zod, jsonwebtoke
 | POST | `/auth/verify-email` | público | confirma e-mail via token |
 | POST | `/auth/request-reset` | público | dispara e-mail de reset |
 | POST | `/auth/reset` | público | redefine senha via token |
-| GET  | `/me` | Bearer | perfil do usuário (hidrata o frontend) |
-| POST | `/billing/checkout` | Bearer | cria Stripe Checkout Session |
-| POST | `/billing/portal` | Bearer + Pro | abre Customer Portal |
-| POST | `/billing/webhook` | assinatura Stripe | **única** fonte que escreve `plan` |
-| POST | `/tools/analyze` | Bearer + **Pro** | narrativa Gemini (ferramenta paga) |
+| GET  | `/me` | Bearer | perfil + `plan` + `limits` (gate de UX no frontend) |
+| POST | `/billing/checkout` | Bearer | cria Checkout Asaas (`{plan}` → `{url}`) |
+| POST | `/billing/cancel` | Bearer + pago | cancela a assinatura no Asaas |
+| POST | `/billing/webhook` | token Asaas (header) | **única** fonte que escreve `plan` |
+| POST | `/tools/analyze` | Bearer + **pago** | narrativa Gemini (gate + quota mensal de IA) |
 
 ## Subir local
 
@@ -42,10 +55,10 @@ node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
 
 1. Suba este diretório num repo Git.
 2. Render → New → Blueprint (usa `render.yaml`) → conecta o repo.
-3. Preencha as env `sync:false` (DATABASE_URL do Neon, APP_URL, API_URL, CORS_ORIGIN, chaves Stripe/Resend/Gemini).
+3. Preencha as env `sync:false` (DATABASE_URL do Neon, APP_URL, API_URL, CORS_ORIGIN, `ASAAS_API_KEY`, `ASAAS_ENV`, `ASAAS_WEBHOOK_TOKEN`, chaves Resend/Gemini).
 4. `JWT_ACCESS_SECRET` é gerado automaticamente pelo Render.
 5. Rode as migrations uma vez (local, apontando `DATABASE_URL` para o Neon de produção): `npm run migrate`.
 
 **Render free hiberna após 15 min** → configure um keepalive (UptimeRobot) batendo em `GET /health` a cada ~10 min.
 
-Detalhes de integração do frontend e setup de Stripe/Resend/Gemini: ver `CLAUDE_CODE.md`.
+Detalhes de integração do frontend e setup de Asaas/Resend/Gemini: ver `CLAUDE_CODE.md`.

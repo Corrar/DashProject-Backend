@@ -2,6 +2,8 @@ import express, { type Response } from 'express';
 import { z } from 'zod';
 import { asyncHandler } from '../lib';
 import { requireAuth, requirePlan, type AuthedRequest } from '../auth/middleware';
+import { pool } from '../db';
+import { PLANS } from '../plans';
 import { generateNarrative } from './gemini';
 
 const router = express.Router();
@@ -28,10 +30,30 @@ function buildPrompt(input: z.infer<typeof schema>): string {
   ].filter(Boolean).join('\n');
 }
 
-// POST /tools/analyze — FERRAMENTA PAGA. Gate server-side: usuário free recebe 402.
-router.post('/analyze', requireAuth, requirePlan('pro'), asyncHandler(async (req: AuthedRequest, res: Response) => {
+// Consumo de IA do mês corrente (derivado por contagem; sem cron de reset).
+async function aiUsedThisMonth(userId: string): Promise<number> {
+  const { rows } = await pool.query<{ n: string }>(
+    "select count(*)::bigint as n from ai_usage where user_id = $1 and created_at >= date_trunc('month', now())",
+    [userId],
+  );
+  return Number(rows[0]?.n ?? 0);
+}
+
+// POST /tools/analyze — FERRAMENTA PAGA. Gate: qualquer plano pago (essencial+) + quota mensal de IA.
+router.post('/analyze', requireAuth, requirePlan('essencial'), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const user = req.user!;
+  const limite = PLANS[user.plan].aiMonthly;
+  const usados = await aiUsedThisMonth(user.id);
+  if (usados >= limite) {
+    // Race concorrente é aceitável no MVP (a contagem pode estourar 1 em chamadas simultâneas).
+    res.status(429).json({ error: 'quota_ia_excedida', limite, usados });
+    return;
+  }
+
   const input = schema.parse(req.body);
   const result = await generateNarrative(buildPrompt(input));
+  // Só registra consumo quando o Gemini respondeu de fato.
+  await pool.query('insert into ai_usage (user_id) values ($1)', [user.id]);
   res.json(result);
 }));
 

@@ -41,11 +41,15 @@ export const env = {
   resendApiKey: optional('RESEND_API_KEY', ''),
   emailFrom: optional('EMAIL_FROM', 'Dash <onboarding@resend.dev>'),
 
-  // Stripe (opcional no boot; rotas retornam 503 se ausente)
-  stripeSecret: optional('STRIPE_SECRET_KEY', ''),
-  stripeWebhookSecret: optional('STRIPE_WEBHOOK_SECRET', ''),
-  stripePricePro: optional('STRIPE_PRICE_PRO', ''),
-  trialDays: int('TRIAL_DAYS', 7),
+  // Asaas (opcional no boot; rotas retornam 503 se ausente). Valores dos planos vêm de src/plans.ts.
+  asaasApiKey: optional('ASAAS_API_KEY', ''),
+  asaasEnv: optional('ASAAS_ENV', 'sandbox') === 'production' ? 'production' : 'sandbox',
+  asaasWebhookToken: optional('ASAAS_WEBHOOK_TOKEN', ''),
+  get asaasBaseUrl(): string {
+    return this.asaasEnv === 'production'
+      ? 'https://api.asaas.com/v3'
+      : 'https://api-sandbox.asaas.com/v3';
+  },
 
   // Gemini (opcional no boot)
   geminiApiKey: optional('GEMINI_API_KEY', ''),

@@ -1,80 +1,106 @@
 import express, { type Request, type Response, type Router } from 'express';
-import type Stripe from 'stripe';
 import { pool } from '../db';
 import { env } from '../env';
 import { log } from '../lib';
-import { stripe, setPlan, userIdForCustomer } from './client';
+import { setPlan, userIdForCustomer, userIdForSubscription } from './asaas';
+import { planForValue, type PlanId } from '../plans';
 
-const ACTIVE = new Set<string>(['active', 'trialing']);
+// Asaas NÃO assina o corpo (sem HMAC, ao contrário do Stripe): a autenticação é um token
+// configurável enviado no header `asaas-access-token` (confirmado na doc). Por isso o corpo
+// é parseado como JSON normal — não precisa mais do raw-body-antes-do-json.
 
-// current_period_end pode estar no topo (APIs antigas) ou no item (APIs recentes).
-function subPeriodEnd(sub: Stripe.Subscription): number | null {
-  const top = (sub as unknown as { current_period_end?: number }).current_period_end;
-  if (typeof top === 'number') return top;
-  const item = sub.items?.data?.[0] as unknown as { current_period_end?: number } | undefined;
-  return typeof item?.current_period_end === 'number' ? item.current_period_end : null;
+interface AsaasPayment {
+  id?: string;
+  customer?: string;
+  subscription?: string | null;
+  value?: number;
+  externalReference?: string | null;
 }
+interface AsaasSubscription {
+  id?: string;
+  customer?: string;
+  externalReference?: string | null;
+}
+interface AsaasWebhookEvent {
+  id?: string;       // evt_... — chave de idempotência (Asaas pode reentregar)
+  event?: string;
+  payment?: AsaasPayment;
+  subscription?: AsaasSubscription;
+}
+
+// Eventos que ATIVAM o plano pago (pagamento confirmado/recebido).
+const ACTIVATE = new Set(['PAYMENT_CONFIRMED', 'PAYMENT_RECEIVED']);
+// Eventos que DERRUBAM para free (inadimplência, estorno, exclusão, cancelamento).
+const DEACTIVATE = new Set([
+  'PAYMENT_OVERDUE', 'PAYMENT_DELETED', 'PAYMENT_REFUNDED',
+  'SUBSCRIPTION_DELETED', 'SUBSCRIPTION_INACTIVATED',
+]);
 
 export function webhookRouter(): Router {
   const r = express.Router();
-  // RAW body só nesta rota — a assinatura quebra se o JSON for parseado antes.
-  r.post('/webhook', express.raw({ type: 'application/json' }), async (req: Request, res: Response): Promise<void> => {
-    const sig = req.headers['stripe-signature'];
-    if (typeof sig !== 'string' || !env.stripeWebhookSecret) {
-      res.status(400).send('config/assinatura'); return;
+  r.post('/webhook', express.json({ type: '*/*', limit: '1mb' }), async (req: Request, res: Response): Promise<void> => {
+    // Validação: token no header deve bater com o configurado.
+    const token = req.headers['asaas-access-token'];
+    if (!env.asaasWebhookToken || token !== env.asaasWebhookToken) {
+      log('warn', 'asaas_webhook_token_invalido', {});
+      res.status(401).send('token invalido'); return;
     }
 
-    let event: Stripe.Event;
-    try {
-      event = stripe().webhooks.constructEvent(req.body as Buffer, sig, env.stripeWebhookSecret);
-    } catch (e) {
-      log('warn', 'stripe_assinatura_invalida', { err: String(e) });
-      res.status(400).send('assinatura invalida'); return;
-    }
+    const evt = req.body as AsaasWebhookEvent;
+    const eventId = evt.id;
+    const type = evt.event;
+    if (!eventId || !type) { res.status(400).send('payload invalido'); return; }
 
-    // Idempotência: insert-or-skip.
+    // Idempotência: insert-or-skip pelo id do evento.
     const dedup = await pool.query(
-      'insert into processed_stripe_events (event_id, type) values ($1,$2) on conflict (event_id) do nothing',
-      [event.id, event.type],
+      'insert into processed_webhook_events (event_id, type) values ($1,$2) on conflict (event_id) do nothing',
+      [eventId, type],
     );
     if (dedup.rowCount === 0) { res.json({ received: true, duplicate: true }); return; }
 
     try {
-      switch (event.type) {
-        case 'checkout.session.completed': {
-          const s = event.data.object as Stripe.Checkout.Session;
-          const userId = s.client_reference_id ?? s.metadata?.app_user_id ?? null;
-          if (userId) {
-            await setPlan(userId, 'pro', {
-              customerId: typeof s.customer === 'string' ? s.customer : s.customer?.id ?? null,
-              subId: typeof s.subscription === 'string' ? s.subscription : s.subscription?.id ?? null,
-            });
-          }
-          break;
-        }
-        case 'customer.subscription.updated':
-        case 'customer.subscription.deleted': {
-          const sub = event.data.object as Stripe.Subscription;
-          const customerId = typeof sub.customer === 'string' ? sub.customer : sub.customer.id;
-          const userId = sub.metadata?.app_user_id ?? (await userIdForCustomer(customerId));
-          if (userId) {
-            const plan: 'free' | 'pro' = event.type === 'customer.subscription.deleted'
-              ? 'free'
-              : (ACTIVE.has(sub.status) ? 'pro' : 'free');
-            await setPlan(userId, plan, { customerId, subId: sub.id, periodEnd: subPeriodEnd(sub) });
-          }
-          break;
-        }
-        default:
-          break;
-      }
+      await handleEvent(evt);
       res.json({ received: true });
     } catch (e) {
-      log('error', 'webhook_falha', { type: event.type, err: String(e) });
-      // Não processou de fato => libera reentrega do Stripe.
-      await pool.query('delete from processed_stripe_events where event_id = $1', [event.id]).catch(() => {});
+      log('error', 'asaas_webhook_falha', { type, err: String(e) });
+      // Não processou de fato => libera reentrega do Asaas.
+      await pool.query('delete from processed_webhook_events where event_id = $1', [eventId]).catch(() => {});
       res.status(500).json({ error: 'falha_processamento' });
     }
   });
   return r;
+}
+
+// Resolve nosso usuário a partir do evento: externalReference (que setamos no checkout) tem
+// prioridade; senão, tenta por subscription/customer já gravados em profiles.
+async function resolveUserId(evt: AsaasWebhookEvent): Promise<string | null> {
+  const ext = evt.payment?.externalReference ?? evt.subscription?.externalReference ?? null;
+  if (ext) return ext;
+  const subId = evt.payment?.subscription ?? evt.subscription?.id ?? null;
+  if (subId) { const u = await userIdForSubscription(subId); if (u) return u; }
+  const custId = evt.payment?.customer ?? evt.subscription?.customer ?? null;
+  if (custId) { const u = await userIdForCustomer(custId); if (u) return u; }
+  return null;
+}
+
+async function handleEvent(evt: AsaasWebhookEvent): Promise<void> {
+  const type = evt.event!;
+  if (!ACTIVATE.has(type) && !DEACTIVATE.has(type)) return; // ignora ruído (idempotência já registrou)
+
+  const userId = await resolveUserId(evt);
+  if (!userId) { log('warn', 'asaas_webhook_sem_usuario', { type }); return; }
+
+  if (ACTIVATE.has(type)) {
+    // Descobre o tier pelo valor da cobrança; fallback no menor pago.
+    const value = evt.payment?.value;
+    const matched = value != null ? planForValue(value) : null;
+    const plan: PlanId = matched ?? 'essencial';
+    await setPlan(userId, plan, {
+      customerId: evt.payment?.customer ?? null,
+      subId: evt.payment?.subscription ?? null,
+    });
+    return;
+  }
+  // DEACTIVATE
+  await setPlan(userId, 'free', {});
 }

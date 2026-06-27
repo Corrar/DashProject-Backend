@@ -31,14 +31,12 @@ services:
         sync: false
       - key: EMAIL_FROM
         sync: false
-      - key: STRIPE_SECRET_KEY
+      - key: ASAAS_API_KEY
         sync: false
-      - key: STRIPE_WEBHOOK_SECRET
+      - key: ASAAS_ENV
         sync: false
-      - key: STRIPE_PRICE_PRO
+      - key: ASAAS_WEBHOOK_TOKEN
         sync: false
-      - key: TRIAL_DAYS
-        value: "7"
       - key: GEMINI_API_KEY
         sync: false
       - key: GEMINI_MODEL

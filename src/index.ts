@@ -19,7 +19,8 @@ app.use(cors({ origin: env.corsOrigins, credentials: true })); // origens exatas
 // Health — também serve de alvo p/ o keepalive (UptimeRobot) contra o spin-down do Render free.
 app.get('/health', (_req, res) => { res.json({ ok: true }); });
 
-// WEBHOOK STRIPE: raw body — montado ANTES de qualquer express.json() global.
+// WEBHOOK ASAAS: valida token no header e parseia JSON próprio (sem HMAC/raw-body).
+// Montado antes das demais rotas /billing; só responde a POST /billing/webhook.
 app.use('/billing', webhookRouter());
 
 app.use(cookieParser());

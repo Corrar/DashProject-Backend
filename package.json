@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "commonjs",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
@@ -20,7 +22,6 @@
     "helmet": "^8.0.0",
     "jsonwebtoken": "^9.0.2",
     "pg": "^8.13.1",
-    "stripe": "^17.5.0",
     "zod": "^3.24.1"
   },
   "devDependencies": {
