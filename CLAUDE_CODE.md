@@ -4,7 +4,7 @@ Você (Claude Code) vai executar duas frentes:
 - **Parte A:** preparar e fazer deploy deste backend (pasta `dash-backend/`).
 - **Parte B:** migrar o frontend do Supabase para este backend, **no branch `design-v2-integration`** do repo do Dash.
 
-Arquitetura final: frontend estático (CDN React + Babel standalone, **sem bundler**) na Vercel → API Node/Express na Render → Postgres na Neon. **Asaas** cuida da assinatura (PIX/cartão/boleto), com **3 tiers** (`free`/`essencial`/`pro`). **Supabase é removido por completo.**
+Arquitetura final: frontend estático (CDN React + Babel standalone, **sem bundler**) na Vercel → API Node/Express na Render → Postgres na Neon. **Asaas** cuida da assinatura recorrente (Checkout hospedado, **cartão de crédito** — regra do Asaas: recorrência só aceita cartão), com **3 tiers** (`free`/`essencial`/`pro`). **Supabase é removido por completo.**
 
 > Regras inegociáveis:
 > - **Nunca** commitar segredos (chave Asaas/Gemini/Resend, token de webhook, JWT secret, DATABASE_URL). Use env do Render / `.env` local (já no `.gitignore`).
@@ -30,7 +30,15 @@ Arquitetura final: frontend estático (CDN React + Babel standalone, **sem bundl
 2. Defina `ASAAS_ENV=sandbox` (testes) ou `production`. O backend escolhe a base automaticamente (`https://api-sandbox.asaas.com/v3` ou `https://api.asaas.com/v3`). Auth pelo header `access_token`.
 3. **Webhook:** no painel do Asaas, cadastre a URL `https://<API_URL>/billing/webhook` e defina um **token de autenticação** (32–255 chars) → repita o mesmo valor em `ASAAS_WEBHOOK_TOKEN`. O Asaas envia esse token no header `asaas-access-token`; o backend compara e rejeita (401) se não bater. **Não há HMAC** (diferente do Stripe) — a validação é só o token do header.
 4. Eventos relevantes (o backend trata): `PAYMENT_CONFIRMED`/`PAYMENT_RECEIVED` → ativa o tier (descoberto pelo valor da cobrança); `PAYMENT_OVERDUE`/`PAYMENT_DELETED`/`PAYMENT_REFUNDED`/`SUBSCRIPTION_DELETED`/`SUBSCRIPTION_INACTIVATED` → volta a `free`. Idempotência pelo `id` (`evt_...`) do evento.
-5. **Checkout hospedado:** `POST /billing/checkout` cria um Checkout recorrente mensal no Asaas (PIX/cartão/boleto) e devolve `{ url }`. O CPF/CNPJ é informado pelo pagador na própria página do Asaas (por isso não precisamos coletá-lo no signup).
+5. **Checkout hospedado:** `POST /billing/checkout` cria um Checkout recorrente mensal no Asaas e devolve `{ url }` (campo `link` da resposta do Asaas). Confirmado no sandbox:
+   - Recorrência (`chargeTypes: RECURRENT`) só aceita **`billingTypes: ['CREDIT_CARD']`** (PIX exige chave Pix + cobrança avulsa; boleto não é permitido em recorrência).
+   - **Não enviamos `customerData`** → a página do Asaas coleta nome/CPF/telefone/endereço do pagador. **O frontend NÃO precisa coletar CPF.**
+   - O `callback` (success/cancel/expired) exige **URLs HTTPS públicas** — `APP_URL` precisa ser https (localhost é rejeitado pelo Asaas). Em produção (Vercel) já é https.
+   - `externalReference = user.id` propaga para assinatura/cobrança e volta no webhook (vínculo confiável).
+6. **Teste local do webhook (túnel):** o Asaas precisa de uma URL pública para entregar o webhook. Use um túnel para o `localhost:8787`:
+   - `ngrok http 8787` → copie a URL https gerada (ex.: `https://abcd-1234.ngrok-free.app`).
+   - No painel do Asaas (sandbox) → **Configurações → Integrações → Webhooks**: cadastre `https://<ngrok>/billing/webhook`, ative os eventos de pagamento/assinatura e defina o **Token de autenticação** = mesmo valor de `ASAAS_WEBHOOK_TOKEN` (o Asaas o envia no header `asaas-access-token`).
+   - Pague o checkout no sandbox (cartão de teste do Asaas) → o webhook chega no túnel → `plan` vira o tier.
 
 ### A3. Resend (e-mail — Render free bloqueia SMTP)
 1. Crie a API key → `RESEND_API_KEY`. Configure um remetente verificado → `EMAIL_FROM`.
@@ -169,7 +177,7 @@ const result = await window.DashAPI.analyze({
 - **Tratamento do gate:** se `error.status === 402` (`plano_insuficiente`), dispare o fluxo de upgrade (abrir planos / checkout) — é o paywall de tier. Se `error.status === 429` (`quota_ia_excedida`, com `error.data.limite`/`usados`), mostre "limite de IA do mês atingido" e ofereça upgrade para um tier com mais cota.
 
 ### B6. `plans-view.jsx`
-- Agora há **3 tiers**. Cada botão de assinar chama `await window.DashAPI.checkout(plan)` com `plan` = `'essencial'` ou `'pro'` (redireciona para o Checkout hospedado do Asaas, com PIX/cartão/boleto).
+- Agora há **3 tiers**. Cada botão de assinar chama `await window.DashAPI.checkout(plan)` com `plan` = `'essencial'` ou `'pro'` (redireciona para o Checkout hospedado do Asaas; cobrança recorrente no **cartão de crédito**).
 - Os preços exibidos devem bater com `src/plans.ts` (essencial R$ 29,90/mês, pro R$ 49,90/mês). A cobrança real usa `PLANS[plan].asaasValue` — não há `price_...` de provedor.
 
 ### B7. `account-view.jsx`

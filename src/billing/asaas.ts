@@ -82,30 +82,35 @@ function todayISO(): string {
   return new Date().toISOString().slice(0, 10); // YYYY-MM-DD (nextDueDate >= hoje)
 }
 
-// Resposta do checkout: o campo da URL hospedada aparece como `link` na doc; aceitamos
-// `url` como alternativa defensiva (a doc não confirmou o body de criação verbatim).
+// Resposta do checkout: a URL hospedada vem no campo `link` (confirmado no sandbox);
+// aceitamos `url` como alternativa defensiva.
 interface CheckoutResponse { id?: string; link?: string; url?: string; status?: string }
 
 // Cria um Checkout HOSPEDADO recorrente mensal e devolve a URL para redirecionar.
-export async function createCheckout(
-  user: { id: string; email: string; name?: string | null },
-  plan: 'essencial' | 'pro',
-): Promise<string> {
+//
+// Regras confirmadas no sandbox Asaas:
+//  - chargeTypes RECURRENT só aceita billingTypes ['CREDIT_CARD'] (PIX exige chave Pix + DETACHED;
+//    boleto não é permitido em recorrência). Assinatura mensal => cartão.
+//  - NÃO enviamos customerData: a própria página do Asaas coleta nome/CPF/telefone/endereço do
+//    pagador (se enviássemos customerData parcial, TODOS esses campos virariam obrigatórios aqui).
+//    Por isso o frontend NÃO precisa coletar CPF.
+//  - callback exige URLs HTTPS públicas (localhost é rejeitado) — em produção APP_URL é https.
+//  - externalReference = user.id propaga para a assinatura e os pagamentos => volta no webhook.
+export async function createCheckout(userId: string, plan: 'essencial' | 'pro'): Promise<string> {
   const value = PLANS[plan].asaasValue;
   const resp = await asaasFetch<CheckoutResponse>('/checkouts', {
     method: 'POST',
     body: {
-      billingTypes: ['PIX', 'CREDIT_CARD', 'BOLETO'],
+      billingTypes: ['CREDIT_CARD'],
       chargeTypes: ['RECURRENT'],
       minutesToExpire: 60,
-      externalReference: user.id, // vínculo com nosso usuário (volta no webhook)
+      externalReference: userId,
       callback: {
         successUrl: `${env.appUrl}/?upgrade=ok`,
         cancelUrl: `${env.appUrl}/?upgrade=cancel`,
         expiredUrl: `${env.appUrl}/?upgrade=expired`,
       },
       items: [{ name: `Dash ${plan}`, description: `Plano ${plan} (mensal)`, quantity: 1, value }],
-      customerData: { name: user.name || user.email, email: user.email },
       subscription: { cycle: 'MONTHLY', nextDueDate: todayISO() },
     },
   });

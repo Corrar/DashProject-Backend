@@ -2,7 +2,6 @@ import express, { type Response } from 'express';
 import { z } from 'zod';
 import { asyncHandler } from '../lib';
 import { requireAuth, requirePlan, type AuthedRequest } from '../auth/middleware';
-import { pool } from '../db';
 import { createCheckout, cancelSubscription } from './asaas';
 
 const router = express.Router();
@@ -12,12 +11,8 @@ const checkoutSchema = z.object({ plan: z.enum(['essencial', 'pro']) });
 
 // POST /billing/checkout — qualquer logado inicia o upgrade. Responde { url } (Checkout Asaas).
 router.post('/checkout', requireAuth, asyncHandler(async (req: AuthedRequest, res: Response) => {
-  const user = req.user!;
   const { plan } = checkoutSchema.parse(req.body);
-  const { rows } = await pool.query<{ full_name: string | null }>(
-    'select full_name from profiles where id = $1', [user.id],
-  );
-  const url = await createCheckout({ id: user.id, email: user.email, name: rows[0]?.full_name }, plan);
+  const url = await createCheckout(req.user!.id, plan);
   res.json({ url });
 }));
 
