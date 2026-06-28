@@ -105,11 +105,38 @@ function callbackUrls() {
   };
 }
 
+export interface CheckoutSession { userId: string; plan: PlanId; method: 'card' | 'pix' }
+
+export async function checkoutSessionFor(checkoutId: string): Promise<CheckoutSession | null> {
+  const { rows } = await pool.query<{ user_id: string; plan: string; method: 'card' | 'pix' }>(
+    'select user_id, plan, method from checkout_sessions where checkout_id = $1', [checkoutId],
+  );
+  const r = rows[0];
+  if (!r) return null;
+  return { userId: r.user_id, plan: r.plan as PlanId, method: r.method };
+}
+
+// O Checkout hospedado NÃO propaga externalReference para o pagamento. Persistimos o id do
+// checkout ANTES de devolver a URL, para o webhook amarrar via payment.checkoutSession.
+// Se o insert falhar, falha o checkout (não devolve URL órfã).
+async function persistAndReturnUrl(
+  resp: CheckoutResponse, userId: string, plan: PlanId, method: 'card' | 'pix',
+): Promise<string> {
+  const url = resp.link ?? resp.url;
+  if (!resp.id || !url) throw new HttpError(502, 'asaas_sem_url', 'checkout criado sem id/URL hospedada');
+  await pool.query(
+    'insert into checkout_sessions (checkout_id, user_id, plan, method) values ($1,$2,$3,$4) on conflict (checkout_id) do nothing',
+    [resp.id, userId, plan, method],
+  );
+  return url;
+}
+
 // TRILHO CARTÃO — Checkout HOSPEDADO recorrente mensal (cartão). Confirmado no sandbox:
 //  - chargeTypes RECURRENT só aceita billingTypes ['CREDIT_CARD'].
 //  - NÃO enviamos customerData (a página do Asaas coleta CPF/endereço) => frontend não coleta CPF.
 //  - callback exige URLs HTTPS públicas (localhost é rejeitado).
-//  - externalReference = userId propaga p/ assinatura e pagamentos => volta no webhook.
+//  - externalReference é setado mas NÃO volta no pagamento (Checkout hospedado) => amarração
+//    real é via checkout_sessions (payment.checkoutSession).
 export async function createCardCheckout(userId: string, plan: 'essencial' | 'pro'): Promise<string> {
   const value = PLANS[plan].asaasValue;
   const resp = await asaasFetch<CheckoutResponse>('/checkouts', {
@@ -124,9 +151,7 @@ export async function createCardCheckout(userId: string, plan: 'essencial' | 'pr
       subscription: { cycle: 'MONTHLY', nextDueDate: todayISO() },
     },
   });
-  const url = resp.link ?? resp.url;
-  if (!url) throw new HttpError(502, 'asaas_sem_url', 'checkout criado sem URL hospedada');
-  return url;
+  return persistAndReturnUrl(resp, userId, plan, 'card');
 }
 
 // TRILHO MANUAL — Checkout HOSPEDADO avulso (Pix) para a 1ª cobrança. Confirmado no sandbox:
@@ -147,9 +172,7 @@ export async function createPixCheckout(userId: string, plan: 'essencial' | 'pro
       items: [{ name: `Dash ${plan}`, description: `Plano ${plan} (Pix mensal)`, quantity: 1, value }],
     },
   });
-  const url = resp.link ?? resp.url;
-  if (!url) throw new HttpError(502, 'asaas_sem_url', 'checkout pix sem URL hospedada');
-  return url;
+  return persistAndReturnUrl(resp, userId, plan, 'pix');
 }
 
 interface PaymentResponse { id?: string; invoiceUrl?: string; bankSlipUrl?: string; status?: string }

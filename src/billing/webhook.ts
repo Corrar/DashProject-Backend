@@ -2,7 +2,7 @@ import express, { type Request, type Response, type Router } from 'express';
 import { pool } from '../db';
 import { env } from '../env';
 import { log } from '../lib';
-import { setPlan, userIdForCustomer, userIdForSubscription, type BillingMethod } from './asaas';
+import { setPlan, userIdForCustomer, userIdForSubscription, checkoutSessionFor, type BillingMethod, type CheckoutSession } from './asaas';
 import { planForValue, type PlanId } from '../plans';
 import { addDays, epochSec, getCurrentPeriodEnd, nextPeriodStart, upsertPaidCycle, ymd } from './cycles';
 
@@ -13,6 +13,7 @@ interface AsaasPayment {
   id?: string;
   customer?: string;
   subscription?: string | null;
+  checkoutSession?: string | null;
   value?: number;
   billingType?: string;
   externalReference?: string | null;
@@ -68,19 +69,26 @@ export function webhookRouter(): Router {
   return r;
 }
 
-async function resolveUserId(evt: AsaasWebhookEvent): Promise<string | null> {
+// Ordem: externalReference → subscription (profiles) → customer (profiles) → checkoutSession
+// (mapa checkout_sessions). O Checkout hospedado NÃO devolve externalReference no pagamento, então
+// a sessão de checkout é a chave confiável da 1ª cobrança.
+async function resolveUserId(evt: AsaasWebhookEvent, session: CheckoutSession | null): Promise<string | null> {
   const ext = evt.payment?.externalReference ?? evt.subscription?.externalReference ?? null;
   if (ext) return ext;
   const subId = evt.payment?.subscription ?? evt.subscription?.id ?? null;
   if (subId) { const u = await userIdForSubscription(subId); if (u) return u; }
   const custId = evt.payment?.customer ?? evt.subscription?.customer ?? null;
   if (custId) { const u = await userIdForCustomer(custId); if (u) return u; }
+  if (session) return session.userId;
   return null;
 }
 
 async function handleEvent(evt: AsaasWebhookEvent): Promise<void> {
   const type = evt.event!;
-  const userId = await resolveUserId(evt);
+  const p = evt.payment;
+  // Sessão de checkout (se o pagamento veio de um checkout hospedado): dá o vínculo e o tier exato.
+  const session = p?.checkoutSession ? await checkoutSessionFor(p.checkoutSession) : null;
+  const userId = await resolveUserId(evt, session);
   if (!userId) { log('warn', 'asaas_webhook_sem_usuario', { type }); return; }
 
   // Cancelamento/inativação de assinatura (cartão) -> downgrade imediato.
@@ -88,7 +96,7 @@ async function handleEvent(evt: AsaasWebhookEvent): Promise<void> {
 
   // PIX/boleto vencido: NÃO derruba; só marca o ciclo OVERDUE (downgrade fica com o job).
   if (type === 'PAYMENT_OVERDUE') {
-    const payId = evt.payment?.id;
+    const payId = p?.id;
     if (payId) {
       await pool.query(
         "update billing_cycles set status='OVERDUE' where asaas_payment_id=$1 and status<>'PAID'", [payId],
@@ -99,11 +107,11 @@ async function handleEvent(evt: AsaasWebhookEvent): Promise<void> {
 
   if (!ACTIVATE.has(type)) return; // ignora ruído (idempotência já registrou)
 
-  const p = evt.payment;
   const value = p?.value;
-  const plan: PlanId = (value != null ? planForValue(value) : null) ?? 'essencial';
+  // Tier: exato pela sessão de checkout; senão pelo valor da cobrança; fallback no menor pago.
+  const plan: PlanId = session?.plan ?? (value != null ? planForValue(value) : null) ?? 'essencial';
   const method = methodOf(p?.billingType);
-  const customerId = p?.customer ?? null;
+  const customerId = p?.customer ?? null; // gravado via setPlan => próximos eventos resolvem por customer
   const now = new Date();
 
   if (p?.subscription) {
