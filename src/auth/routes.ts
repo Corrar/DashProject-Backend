@@ -3,7 +3,7 @@ import { z } from 'zod';
 import crypto from 'node:crypto';
 import { pool } from '../db';
 import { env } from '../env';
-import { HttpError, asyncHandler } from '../lib';
+import { HttpError, asyncHandler, log } from '../lib';
 import { assertStrongPassword, hashPassword, verifyPassword } from './passwords';
 import { signAccessToken, issueRefreshToken, rotateRefreshToken, revokeRefreshToken } from './tokens';
 import { sendVerifyEmail, sendResetEmail } from './email';
@@ -75,8 +75,19 @@ router.post('/signup', asyncHandler(async (req, res) => {
     client.release();
   }
 
-  const token = await emailToken(userId, 'verify', 24 * 60 * 60 * 1000);
-  await sendVerifyEmail(email, `${env.appUrl}/?verify=${token}`);
+  // E-mail de verificação é best-effort: a conta já está criada e commitada acima.
+  // Se o envio falhar (ex.: Resend sem domínio verificado -> 403), logamos e seguimos —
+  // o usuário recebe access_token + cookie normalmente e a verificação pode ser reenviada.
+  // Nunca propaga: o signup não pode dar 500 (e sonegar a sessão) por causa do e-mail.
+  try {
+    const token = await emailToken(userId, 'verify', 24 * 60 * 60 * 1000);
+    await sendVerifyEmail(email, `${env.appUrl}/?verify=${token}`);
+  } catch (e) {
+    log('warn', 'signup_verify_email_falhou', {
+      userId,
+      motivo: e instanceof Error ? e.message : String(e),
+    });
+  }
 
   const access = signAccessToken({ sub: userId, email, plan: 'free' });
   setRefreshCookie(res, await issueRefreshToken(userId));
