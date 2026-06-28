@@ -38,3 +38,39 @@ export async function sendResetEmail(to: string, link: string): Promise<void> {
      <p>O link expira em 1h. Se nao foi voce, ignore este e-mail.</p>`,
   );
 }
+
+function brl(value: number): string {
+  return `R$ ${value.toFixed(2).replace('.', ',')}`;
+}
+
+// Trilho manual (Pix/boleto): cobrança de renovação disponível.
+export async function sendInvoiceEmail(
+  to: string, link: string, dueDate: string, plan: string, value: number,
+): Promise<void> {
+  await send(
+    to,
+    'Renovacao do seu plano Dash',
+    `<p>Sua renovacao do plano <strong>${plan}</strong> (${brl(value)}) esta disponivel.</p>
+     <p>Vencimento: ${dueDate}.</p>
+     <p><a href="${link}">Pagar agora (Pix/boleto)</a></p>
+     <p>Apos o pagamento seu acesso e estendido automaticamente.</p>`,
+  );
+}
+
+// Lembrete de cobrança pendente (marcos: D-1, vencimento, atraso).
+export async function sendInvoiceReminder(
+  to: string, link: string, dueDate: string, plan: string, value: number, kind: 'd1' | 'due' | 'overdue',
+): Promise<void> {
+  const head = kind === 'overdue'
+    ? 'Sua cobranca venceu — pague para manter o acesso'
+    : kind === 'due'
+      ? 'Sua cobranca vence hoje'
+      : 'Sua cobranca vence amanha';
+  await send(
+    to,
+    `${head} - Dash`,
+    `<p>${head}.</p>
+     <p>Plano <strong>${plan}</strong> (${brl(value)}), vencimento ${dueDate}.</p>
+     <p><a href="${link}">Pagar agora (Pix/boleto)</a></p>`,
+  );
+}

@@ -51,6 +51,11 @@ export const env = {
       : 'https://api-sandbox.asaas.com/v3';
   },
 
+  // Job de cobrança (trilho manual). Chamado por cron externo com header x-jobs-secret.
+  jobsSecret: optional('JOBS_SECRET', ''),
+  renewalLeadDays: int('RENEWAL_LEAD_DAYS', 5), // gera a próxima cobrança N dias antes do fim do período
+  graceDays: int('GRACE_DAYS', 3),              // tolerância após o fim do período antes do downgrade
+
   // Gemini (opcional no boot)
   geminiApiKey: optional('GEMINI_API_KEY', ''),
   geminiModel: optional('GEMINI_MODEL', 'gemini-2.5-flash'),

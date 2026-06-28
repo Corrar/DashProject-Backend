@@ -2,17 +2,22 @@ import express, { type Response } from 'express';
 import { z } from 'zod';
 import { asyncHandler } from '../lib';
 import { requireAuth, requirePlan, type AuthedRequest } from '../auth/middleware';
-import { createCheckout, cancelSubscription } from './asaas';
+import { createCardCheckout, createPixCheckout, cancelSubscription } from './asaas';
 
 const router = express.Router();
 router.use(express.json({ limit: '16kb' }));
 
-const checkoutSchema = z.object({ plan: z.enum(['essencial', 'pro']) });
+// method 'card' = recorrente no cartão; 'pix' = entrada avulsa por Pix (boleto fica nas renovações).
+const checkoutSchema = z.object({
+  plan: z.enum(['essencial', 'pro']),
+  method: z.enum(['card', 'pix']).default('card'),
+});
 
 // POST /billing/checkout — qualquer logado inicia o upgrade. Responde { url } (Checkout Asaas).
 router.post('/checkout', requireAuth, asyncHandler(async (req: AuthedRequest, res: Response) => {
-  const { plan } = checkoutSchema.parse(req.body);
-  const url = await createCheckout(req.user!.id, plan);
+  const { plan, method } = checkoutSchema.parse(req.body);
+  const userId = req.user!.id;
+  const url = method === 'pix' ? await createPixCheckout(userId, plan) : await createCardCheckout(userId, plan);
   res.json({ url });
 }));
 

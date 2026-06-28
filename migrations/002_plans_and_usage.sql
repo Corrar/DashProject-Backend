@@ -22,7 +22,16 @@ create table if not exists ai_usage (
 create index if not exists idx_ai_usage_user_month on ai_usage(user_id, created_at);
 
 -- 4) Idempotência de webhooks: renomeia a tabela do Stripe para nome neutro de provedor.
-alter table if exists processed_stripe_events rename to processed_webhook_events;
+--    Idempotente: 001 recria processed_stripe_events a cada run, então só renomeia se o destino
+--    ainda não existe; caso contrário descarta a tabela antiga recriada.
+do $$
+begin
+  if to_regclass('public.processed_webhook_events') is null then
+    alter table if exists processed_stripe_events rename to processed_webhook_events;
+  else
+    drop table if exists processed_stripe_events;
+  end if;
+end $$;
 create table if not exists processed_webhook_events (
   event_id     text primary key,
   type         text not null,

@@ -36,11 +36,19 @@ async function asaasFetch<T>(path: string, init: { method: string; body?: unknow
   return json as T;
 }
 
-// ── Escrita de plano: ÚNICO caminho que toca plan/asaas_* (GUC libera o trigger guard) ──
+export type BillingMethod = 'card' | 'pix' | 'boleto';
+
+// ── Escrita de plano: ÚNICO caminho que toca plan/asaas_*/billing_method/current_period_end
+//    (o GUC app.billing='on' libera o trigger guard). ──
 export async function setPlan(
   userId: string,
   plan: PlanId,
-  patch: { customerId?: string | null; subId?: string | null } = {},
+  patch: {
+    customerId?: string | null;
+    subId?: string | null;
+    billingMethod?: BillingMethod | null;
+    periodEnd?: number | null; // epoch (segundos); null = mantém
+  } = {},
 ): Promise<void> {
   const c: PoolClient = await pool.connect();
   try {
@@ -50,9 +58,12 @@ export async function setPlan(
       `update profiles set
          plan = $2,
          asaas_customer_id     = coalesce($3, asaas_customer_id),
-         asaas_subscription_id = coalesce($4, asaas_subscription_id)
+         asaas_subscription_id = coalesce($4, asaas_subscription_id),
+         billing_method        = coalesce($5, billing_method),
+         current_period_end    = case when $6::bigint is null then current_period_end
+                                      else to_timestamp($6::bigint) end
        where id = $1`,
-      [userId, plan, patch.customerId ?? null, patch.subId ?? null],
+      [userId, plan, patch.customerId ?? null, patch.subId ?? null, patch.billingMethod ?? null, patch.periodEnd ?? null],
     );
     await c.query('commit');
   } catch (e) {
@@ -86,17 +97,20 @@ function todayISO(): string {
 // aceitamos `url` como alternativa defensiva.
 interface CheckoutResponse { id?: string; link?: string; url?: string; status?: string }
 
-// Cria um Checkout HOSPEDADO recorrente mensal e devolve a URL para redirecionar.
-//
-// Regras confirmadas no sandbox Asaas:
-//  - chargeTypes RECURRENT só aceita billingTypes ['CREDIT_CARD'] (PIX exige chave Pix + DETACHED;
-//    boleto não é permitido em recorrência). Assinatura mensal => cartão.
-//  - NÃO enviamos customerData: a própria página do Asaas coleta nome/CPF/telefone/endereço do
-//    pagador (se enviássemos customerData parcial, TODOS esses campos virariam obrigatórios aqui).
-//    Por isso o frontend NÃO precisa coletar CPF.
-//  - callback exige URLs HTTPS públicas (localhost é rejeitado) — em produção APP_URL é https.
-//  - externalReference = user.id propaga para a assinatura e os pagamentos => volta no webhook.
-export async function createCheckout(userId: string, plan: 'essencial' | 'pro'): Promise<string> {
+function callbackUrls() {
+  return {
+    successUrl: `${env.appUrl}/?upgrade=ok`,
+    cancelUrl: `${env.appUrl}/?upgrade=cancel`,
+    expiredUrl: `${env.appUrl}/?upgrade=expired`,
+  };
+}
+
+// TRILHO CARTÃO — Checkout HOSPEDADO recorrente mensal (cartão). Confirmado no sandbox:
+//  - chargeTypes RECURRENT só aceita billingTypes ['CREDIT_CARD'].
+//  - NÃO enviamos customerData (a página do Asaas coleta CPF/endereço) => frontend não coleta CPF.
+//  - callback exige URLs HTTPS públicas (localhost é rejeitado).
+//  - externalReference = userId propaga p/ assinatura e pagamentos => volta no webhook.
+export async function createCardCheckout(userId: string, plan: 'essencial' | 'pro'): Promise<string> {
   const value = PLANS[plan].asaasValue;
   const resp = await asaasFetch<CheckoutResponse>('/checkouts', {
     method: 'POST',
@@ -105,11 +119,7 @@ export async function createCheckout(userId: string, plan: 'essencial' | 'pro'):
       chargeTypes: ['RECURRENT'],
       minutesToExpire: 60,
       externalReference: userId,
-      callback: {
-        successUrl: `${env.appUrl}/?upgrade=ok`,
-        cancelUrl: `${env.appUrl}/?upgrade=cancel`,
-        expiredUrl: `${env.appUrl}/?upgrade=expired`,
-      },
+      callback: callbackUrls(),
       items: [{ name: `Dash ${plan}`, description: `Plano ${plan} (mensal)`, quantity: 1, value }],
       subscription: { cycle: 'MONTHLY', nextDueDate: todayISO() },
     },
@@ -117,6 +127,56 @@ export async function createCheckout(userId: string, plan: 'essencial' | 'pro'):
   const url = resp.link ?? resp.url;
   if (!url) throw new HttpError(502, 'asaas_sem_url', 'checkout criado sem URL hospedada');
   return url;
+}
+
+// TRILHO MANUAL — Checkout HOSPEDADO avulso (Pix) para a 1ª cobrança. Confirmado no sandbox:
+//  - chargeTypes DETACHED aceita billingTypes ['PIX'] (BOLETO é REJEITADO no Checkout API;
+//    boleto só via POST /payments, usado nas renovações do job).
+//  - Sem customerData: a página coleta CPF e CRIA o customer (pegamos o customer id no webhook
+//    para gerar os próximos ciclos via POST /payments).
+export async function createPixCheckout(userId: string, plan: 'essencial' | 'pro'): Promise<string> {
+  const value = PLANS[plan].asaasValue;
+  const resp = await asaasFetch<CheckoutResponse>('/checkouts', {
+    method: 'POST',
+    body: {
+      billingTypes: ['PIX'],
+      chargeTypes: ['DETACHED'],
+      minutesToExpire: 60,
+      externalReference: userId,
+      callback: callbackUrls(),
+      items: [{ name: `Dash ${plan}`, description: `Plano ${plan} (Pix mensal)`, quantity: 1, value }],
+    },
+  });
+  const url = resp.link ?? resp.url;
+  if (!url) throw new HttpError(502, 'asaas_sem_url', 'checkout pix sem URL hospedada');
+  return url;
+}
+
+interface PaymentResponse { id?: string; invoiceUrl?: string; bankSlipUrl?: string; status?: string }
+
+// Gera uma cobrança avulsa (renovação do trilho manual) reusando o customer JÁ existente
+// (sem reenviar cpfCnpj). Confirmado no sandbox: invoiceUrl é a URL hospedada (Pix e boleto).
+export async function createPayment(opts: {
+  userId: string;
+  customerId: string;
+  billingType: 'PIX' | 'BOLETO';
+  value: number;
+  dueDate: string; // YYYY-MM-DD
+  description?: string;
+}): Promise<{ id: string; invoiceUrl: string }> {
+  const resp = await asaasFetch<PaymentResponse>('/payments', {
+    method: 'POST',
+    body: {
+      customer: opts.customerId,
+      billingType: opts.billingType,
+      value: opts.value,
+      dueDate: opts.dueDate,
+      description: opts.description,
+      externalReference: opts.userId,
+    },
+  });
+  if (!resp.id || !resp.invoiceUrl) throw new HttpError(502, 'asaas_payment_sem_url', 'pagamento sem invoiceUrl');
+  return { id: resp.id, invoiceUrl: resp.invoiceUrl };
 }
 
 // Cancela a assinatura no Asaas. O downgrade p/ 'free' vem pelo webhook (não escrevemos aqui).

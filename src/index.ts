@@ -9,6 +9,7 @@ import authRoutes from './auth/routes';
 import billingRoutes from './billing/routes';
 import toolsRoutes from './tools/routes';
 import accountRoutes from './account';
+import jobsRoutes from './jobs/routes';
 
 const app = express();
 app.set('trust proxy', 1); // Render fica atrás de proxy — necessário p/ secure cookies e IP real.
@@ -27,6 +28,7 @@ app.use(cookieParser());
 app.use('/auth', authRoutes);
 app.use('/billing', billingRoutes);
 app.use('/tools', toolsRoutes);
+app.use('/jobs', jobsRoutes);
 app.use('/', accountRoutes);
 
 app.use((_req, res) => { res.status(404).json({ error: 'nao_encontrado' }); });

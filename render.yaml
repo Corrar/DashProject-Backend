@@ -41,3 +41,9 @@ services:
         sync: false
       - key: GEMINI_MODEL
         value: gemini-2.5-flash
+      - key: JOBS_SECRET
+        sync: false
+      - key: RENEWAL_LEAD_DAYS
+        value: "5"
+      - key: GRACE_DAYS
+        value: "3"
