@@ -1,6 +1,19 @@
+# Dependências / build
 node_modules/
 dist/
+
+# Variáveis de ambiente / SEGREDOS — nunca commitar
 .env
-.env.local
+.env.*
+!.env.example
+
+# Logs e temporários
 *.log
+*.tmp
+_*.tmp.ts
+
+# Sistema operacional
 .DS_Store
+
+# Config local do Claude Code (pessoal, não publicar)
+.claude/settings.local.json
