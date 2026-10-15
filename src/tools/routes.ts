@@ -1,7 +1,7 @@
 import express, { type Response } from 'express';
 import { z } from 'zod';
 import { asyncHandler } from '../lib';
-import { requireAuth, requirePlan, type AuthedRequest } from '../auth/middleware';
+import { requireAuth, type AuthedRequest } from '../auth/middleware';
 import { pool } from '../db';
 import { PLANS } from '../plans';
 import { generateNarrative } from './gemini';
@@ -39,8 +39,9 @@ async function aiUsedThisMonth(userId: string): Promise<number> {
   return Number(rows[0]?.n ?? 0);
 }
 
-// POST /tools/analyze — FERRAMENTA PAGA. Gate: qualquer plano pago (essencial+) + quota mensal de IA.
-router.post('/analyze', requireAuth, requirePlan('essencial'), asyncHandler(async (req: AuthedRequest, res: Response) => {
+// POST /tools/analyze — análise de IA. Gate: conta logada + quota mensal do plano (Free = 1,
+// Essencial = 50, Pro = 300; ver src/plans.ts). Anônimo recebe 401 e o frontend pede cadastro.
+router.post('/analyze', requireAuth, asyncHandler(async (req: AuthedRequest, res: Response) => {
   const user = req.user!;
   const limite = PLANS[user.plan].aiMonthly;
   const usados = await aiUsedThisMonth(user.id);

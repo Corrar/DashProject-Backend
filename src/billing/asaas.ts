@@ -11,7 +11,7 @@ import { pool } from '../db';
 import { env } from '../env';
 import { HttpError, log } from '../lib';
 import { invalidatePlan } from '../auth/middleware';
-import { PLANS, type PlanId } from '../plans';
+import { priceFor, type Cycle, type PaidPlanId, type PlanId } from '../plans';
 
 interface AsaasErrorBody { errors?: { code?: string; description?: string }[] }
 
@@ -48,6 +48,8 @@ export async function setPlan(
     subId?: string | null;
     billingMethod?: BillingMethod | null;
     periodEnd?: number | null; // epoch (segundos); null = mantém
+    cycle?: Cycle | null;
+    autoRenew?: boolean | null;
   } = {},
 ): Promise<void> {
   const c: PoolClient = await pool.connect();
@@ -61,9 +63,12 @@ export async function setPlan(
          asaas_subscription_id = coalesce($4, asaas_subscription_id),
          billing_method        = coalesce($5, billing_method),
          current_period_end    = case when $6::bigint is null then current_period_end
-                                      else to_timestamp($6::bigint) end
+                                      else to_timestamp($6::bigint) end,
+         billing_cycle         = coalesce($7, billing_cycle),
+         auto_renew            = coalesce($8, auto_renew)
        where id = $1`,
-      [userId, plan, patch.customerId ?? null, patch.subId ?? null, patch.billingMethod ?? null, patch.periodEnd ?? null],
+      [userId, plan, patch.customerId ?? null, patch.subId ?? null, patch.billingMethod ?? null, patch.periodEnd ?? null,
+        patch.cycle ?? null, patch.autoRenew ?? null],
     );
     await c.query('commit');
   } catch (e) {
@@ -105,28 +110,30 @@ function callbackUrls() {
   };
 }
 
-export interface CheckoutSession { userId: string; plan: PlanId; method: 'card' | 'pix' }
+export interface CheckoutSession { userId: string; plan: PlanId; method: 'card' | 'pix'; cycle: Cycle }
 
 export async function checkoutSessionFor(checkoutId: string): Promise<CheckoutSession | null> {
-  const { rows } = await pool.query<{ user_id: string; plan: string; method: 'card' | 'pix' }>(
-    'select user_id, plan, method from checkout_sessions where checkout_id = $1', [checkoutId],
+  const { rows } = await pool.query<{ user_id: string; plan: string; method: 'card' | 'pix'; cycle: string }>(
+    'select user_id, plan, method, cycle from checkout_sessions where checkout_id = $1', [checkoutId],
   );
   const r = rows[0];
   if (!r) return null;
-  return { userId: r.user_id, plan: r.plan as PlanId, method: r.method };
+  return { userId: r.user_id, plan: r.plan as PlanId, method: r.method, cycle: r.cycle === 'yearly' ? 'yearly' : 'monthly' };
 }
+
+const cycleLabel = (cycle: Cycle): string => (cycle === 'yearly' ? 'anual' : 'mensal');
 
 // O Checkout hospedado NÃO propaga externalReference para o pagamento. Persistimos o id do
 // checkout ANTES de devolver a URL, para o webhook amarrar via payment.checkoutSession.
 // Se o insert falhar, falha o checkout (não devolve URL órfã).
 async function persistAndReturnUrl(
-  resp: CheckoutResponse, userId: string, plan: PlanId, method: 'card' | 'pix',
+  resp: CheckoutResponse, userId: string, plan: PlanId, method: 'card' | 'pix', cycle: Cycle,
 ): Promise<string> {
   const url = resp.link ?? resp.url;
   if (!resp.id || !url) throw new HttpError(502, 'asaas_sem_url', 'checkout criado sem id/URL hospedada');
   await pool.query(
-    'insert into checkout_sessions (checkout_id, user_id, plan, method) values ($1,$2,$3,$4) on conflict (checkout_id) do nothing',
-    [resp.id, userId, plan, method],
+    'insert into checkout_sessions (checkout_id, user_id, plan, method, cycle) values ($1,$2,$3,$4,$5) on conflict (checkout_id) do nothing',
+    [resp.id, userId, plan, method, cycle],
   );
   return url;
 }
@@ -137,8 +144,8 @@ async function persistAndReturnUrl(
 //  - callback exige URLs HTTPS públicas (localhost é rejeitado).
 //  - externalReference é setado mas NÃO volta no pagamento (Checkout hospedado) => amarração
 //    real é via checkout_sessions (payment.checkoutSession).
-export async function createCardCheckout(userId: string, plan: 'essencial' | 'pro'): Promise<string> {
-  const value = PLANS[plan].asaasValue;
+export async function createCardCheckout(userId: string, plan: PaidPlanId, cycle: Cycle = 'monthly'): Promise<string> {
+  const value = priceFor(plan, cycle);
   const resp = await asaasFetch<CheckoutResponse>('/checkouts', {
     method: 'POST',
     body: {
@@ -147,11 +154,11 @@ export async function createCardCheckout(userId: string, plan: 'essencial' | 'pr
       minutesToExpire: 60,
       externalReference: userId,
       callback: callbackUrls(),
-      items: [{ name: `Dash ${plan}`, description: `Plano ${plan} (mensal)`, quantity: 1, value }],
-      subscription: { cycle: 'MONTHLY', nextDueDate: todayISO() },
+      items: [{ name: `Dash ${plan}`, description: `Plano ${plan} (${cycleLabel(cycle)})`, quantity: 1, value }],
+      subscription: { cycle: cycle === 'yearly' ? 'YEARLY' : 'MONTHLY', nextDueDate: todayISO() },
     },
   });
-  return persistAndReturnUrl(resp, userId, plan, 'card');
+  return persistAndReturnUrl(resp, userId, plan, 'card', cycle);
 }
 
 // TRILHO MANUAL — Checkout HOSPEDADO avulso (Pix) para a 1ª cobrança. Confirmado no sandbox:
@@ -159,8 +166,8 @@ export async function createCardCheckout(userId: string, plan: 'essencial' | 'pr
 //    boleto só via POST /payments, usado nas renovações do job).
 //  - Sem customerData: a página coleta CPF e CRIA o customer (pegamos o customer id no webhook
 //    para gerar os próximos ciclos via POST /payments).
-export async function createPixCheckout(userId: string, plan: 'essencial' | 'pro'): Promise<string> {
-  const value = PLANS[plan].asaasValue;
+export async function createPixCheckout(userId: string, plan: PaidPlanId, cycle: Cycle = 'monthly'): Promise<string> {
+  const value = priceFor(plan, cycle);
   const resp = await asaasFetch<CheckoutResponse>('/checkouts', {
     method: 'POST',
     body: {
@@ -169,10 +176,10 @@ export async function createPixCheckout(userId: string, plan: 'essencial' | 'pro
       minutesToExpire: 60,
       externalReference: userId,
       callback: callbackUrls(),
-      items: [{ name: `Dash ${plan}`, description: `Plano ${plan} (Pix mensal)`, quantity: 1, value }],
+      items: [{ name: `Dash ${plan}`, description: `Plano ${plan} (Pix ${cycleLabel(cycle)})`, quantity: 1, value }],
     },
   });
-  return persistAndReturnUrl(resp, userId, plan, 'pix');
+  return persistAndReturnUrl(resp, userId, plan, 'pix', cycle);
 }
 
 interface PaymentResponse { id?: string; invoiceUrl?: string; bankSlipUrl?: string; status?: string }
@@ -204,11 +211,16 @@ export async function createPayment(opts: {
 
 // Troca de plano no trilho cartão: muda o valor da MESMA assinatura (POST /v3/subscriptions/{id},
 // "atualizar assinatura existente"). updatePendingPayments também corrige a cobrança do próximo
-// ciclo se o Asaas já a tiver gerado. O tier efetivo segue o valor pago (webhook → planForValue).
-export async function updateSubscriptionPlan(subId: string, plan: 'essencial' | 'pro'): Promise<void> {
+// ciclo se o Asaas já a tiver gerado. O tier efetivo segue o valor pago (webhook → chargeForValue).
+export async function updateSubscriptionPlan(subId: string, plan: PaidPlanId, cycle: Cycle): Promise<void> {
   await asaasFetch<unknown>(`/subscriptions/${subId}`, {
     method: 'POST',
-    body: { value: PLANS[plan].asaasValue, description: `Plano ${plan} (mensal)`, updatePendingPayments: true },
+    body: {
+      value: priceFor(plan, cycle),
+      cycle: cycle === 'yearly' ? 'YEARLY' : 'MONTHLY',
+      description: `Plano ${plan} (${cycleLabel(cycle)})`,
+      updatePendingPayments: true,
+    },
   });
 }
 

@@ -3,7 +3,7 @@ import { pool } from '../db';
 import { env } from '../env';
 import { log } from '../lib';
 import { setPlan, userIdForCustomer, userIdForSubscription, checkoutSessionFor, type BillingMethod, type CheckoutSession } from './asaas';
-import { planForValue, type PlanId } from '../plans';
+import { CYCLE_DAYS, chargeForValue, isPlanId, type Cycle, type PlanId } from '../plans';
 import { addDays, epochSec, getCurrentPeriodEnd, nextPeriodStart, upsertPaidCycle, ymd } from './cycles';
 
 // Asaas NÃO assina o corpo (sem HMAC): autenticação por token no header `asaas-access-token`.
@@ -91,17 +91,24 @@ async function handleEvent(evt: AsaasWebhookEvent): Promise<void> {
   const userId = await resolveUserId(evt, session);
   if (!userId) { log('warn', 'asaas_webhook_sem_usuario', { type }); return; }
 
-  // Cancelamento/inativação de assinatura (cartão) -> downgrade imediato — mas só se for a
-  // assinatura VIGENTE do perfil. Evento atrasado de uma assinatura antiga (ex.: cancelou, assinou
-  // de novo e só então chegou o INACTIVATED da anterior) não pode derrubar o plano atual.
+  // Cancelamento/inativação de assinatura (cartão) — só da assinatura VIGENTE do perfil: evento
+  // atrasado de uma assinatura antiga (cancelou, assinou de novo e só então chegou o INACTIVATED da
+  // anterior) não pode derrubar o plano atual. Com período pago restante (ex.: anual), o acesso
+  // continua até o fim (auto_renew=false; o job derruba depois); sem período, cai para Free já.
   if (SUB_END.has(type)) {
     const endedSub = evt.subscription?.id ?? p?.subscription ?? null;
-    const cur = await pool.query<{ asaas_subscription_id: string | null }>(
-      'select asaas_subscription_id from profiles where id = $1', [userId],
+    const cur = await pool.query<{ asaas_subscription_id: string | null; plan: string; current_period_end: Date | null }>(
+      'select asaas_subscription_id, plan, current_period_end from profiles where id = $1', [userId],
     );
-    const currentSub = cur.rows[0]?.asaas_subscription_id ?? null;
+    const row = cur.rows[0];
+    const currentSub = row?.asaas_subscription_id ?? null;
     if (endedSub && currentSub && endedSub !== currentSub) {
       log('info', 'asaas_sub_end_ignorado_assinatura_antiga', { type, endedSub });
+      return;
+    }
+    const paidUntil = row?.current_period_end ?? null;
+    if (row && isPlanId(row.plan) && row.plan !== 'free' && paidUntil && paidUntil.getTime() > Date.now()) {
+      await setPlan(userId, row.plan, { autoRenew: false });
       return;
     }
     await setPlan(userId, 'free');
@@ -132,25 +139,30 @@ async function handleEvent(evt: AsaasWebhookEvent): Promise<void> {
   }
 
   const value = p?.value;
-  // Tier pelo VALOR pago (reflete troca de plano na assinatura: as renovações podem continuar
-  // ligadas à sessão do checkout original); senão a sessão de checkout; fallback no menor pago.
-  const plan: PlanId = (value != null ? planForValue(value) : null) ?? session?.plan ?? 'essencial';
+  // Tier e ciclo pelo VALOR pago (reflete troca de plano/ciclo na assinatura: as renovações podem
+  // continuar ligadas à sessão do checkout original); senão a sessão; fallback no menor pago mensal.
+  const charge = value != null ? chargeForValue(value) : null;
+  const plan: PlanId = charge?.plan ?? session?.plan ?? 'essencial';
+  const cycle: Cycle = charge?.cycle ?? session?.cycle ?? 'monthly';
+  const days = CYCLE_DAYS[cycle];
   const method = methodOf(p?.billingType);
   const customerId = p?.customer ?? null; // gravado via setPlan => próximos eventos resolvem por customer
   const now = new Date();
 
   if (p?.subscription) {
-    // TRILHO CARTÃO: estende o período (+30d) e mantém assinatura como fonte da verdade.
+    // TRILHO CARTÃO: estende o período (30 ou 365 dias) e mantém a assinatura como fonte da verdade.
     const start = nextPeriodStart(await getCurrentPeriodEnd(userId), now);
-    const periodEnd = addDays(start, 30);
-    await setPlan(userId, plan, { customerId, subId: p.subscription, billingMethod: 'card', periodEnd: epochSec(periodEnd) });
+    const periodEnd = addDays(start, days);
+    await setPlan(userId, plan, {
+      customerId, subId: p.subscription, billingMethod: 'card', periodEnd: epochSec(periodEnd), cycle, autoRenew: true,
+    });
     await markPaymentActivated(paymentKey, type);
     return;
   }
 
   // TRILHO MANUAL (pix/boleto): registra ciclo PAID e estende o período.
   const start = nextPeriodStart(await getCurrentPeriodEnd(userId), now);
-  const periodEnd = addDays(start, 30);
+  const periodEnd = addDays(start, days);
   const billingType: 'PIX' | 'BOLETO' = method === 'boleto' ? 'BOLETO' : 'PIX';
   if (p?.id) {
     await upsertPaidCycle({
@@ -158,7 +170,7 @@ async function handleEvent(evt: AsaasWebhookEvent): Promise<void> {
       dueDate: ymd(now), periodStart: ymd(start), periodEnd: ymd(periodEnd), invoiceUrl: null,
     });
   }
-  await setPlan(userId, plan, { customerId, billingMethod: method, periodEnd: epochSec(periodEnd) });
+  await setPlan(userId, plan, { customerId, billingMethod: method, periodEnd: epochSec(periodEnd), cycle, autoRenew: true });
   await markPaymentActivated(paymentKey, type);
 }
 

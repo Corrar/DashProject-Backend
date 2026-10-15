@@ -4,7 +4,7 @@ import express, { type Request, type Response } from 'express';
 import { pool } from '../db';
 import { env } from '../env';
 import { asyncHandler, log } from '../lib';
-import { PLANS, isPlanId } from '../plans';
+import { CYCLE_DAYS, isPlanId, priceFor } from '../plans';
 import { createPayment, setPlan } from '../billing/asaas';
 import { addDays, ymd } from '../billing/cycles';
 import { sendInvoiceEmail, sendInvoiceReminder } from '../auth/email';
@@ -14,13 +14,13 @@ router.use(express.json({ limit: '8kb' }));
 
 interface Candidate {
   user_id: string; plan: string; billing_method: 'pix' | 'boleto';
-  asaas_customer_id: string; current_period_end: Date; email: string;
+  asaas_customer_id: string; current_period_end: Date; email: string; billing_cycle: string;
 }
 
 // A) GERAÇÃO da próxima cobrança (lead days antes do fim), sem duplicar.
 async function generate(): Promise<number> {
   const { rows } = await pool.query<Candidate>(
-    `select p.id as user_id, p.plan, p.billing_method, p.asaas_customer_id, p.current_period_end, u.email
+    `select p.id as user_id, p.plan, p.billing_method, p.asaas_customer_id, p.current_period_end, p.billing_cycle, u.email
        from profiles p join users u on u.id = p.id
       where p.billing_method in ('pix','boleto')
         and p.plan <> 'free'
@@ -38,10 +38,11 @@ async function generate(): Promise<number> {
   let generated = 0;
   for (const c of rows) {
     if (!isPlanId(c.plan) || c.plan === 'free') continue;
-    const value = PLANS[c.plan].asaasValue;
+    const cycle = c.billing_cycle === 'yearly' ? 'yearly' : 'monthly';
+    const value = priceFor(c.plan, cycle);
     const billingType: 'PIX' | 'BOLETO' = c.billing_method === 'boleto' ? 'BOLETO' : 'PIX';
     const periodStart = ymd(c.current_period_end);
-    const periodEnd = ymd(addDays(c.current_period_end, 30));
+    const periodEnd = ymd(addDays(c.current_period_end, CYCLE_DAYS[cycle]));
     const dueDate = periodStart;
 
     const client = await pool.connect();
@@ -55,7 +56,7 @@ async function generate(): Promise<number> {
       );
       if ((dup.rowCount ?? 0) > 0) { await client.query('rollback'); continue; }
 
-      const pay = await createPayment({ userId: c.user_id, customerId: c.asaas_customer_id, billingType, value, dueDate, description: `Renovacao Dash ${c.plan}` });
+      const pay = await createPayment({ userId: c.user_id, customerId: c.asaas_customer_id, billingType, value, dueDate, description: `Renovacao Dash ${c.plan} (${cycle === 'yearly' ? 'anual' : 'mensal'})` });
       await client.query(
         `insert into billing_cycles
            (user_id, plan, billing_type, asaas_payment_id, value, due_date, period_start, period_end, status, invoice_url, reminders)
@@ -104,17 +105,20 @@ async function reminders(): Promise<number> {
   return sent;
 }
 
-// C) EXPIRAÇÃO/DOWNGRADE após o grace (só pix/boleto; cartão é gerido pelos webhooks).
+// C) EXPIRAÇÃO/DOWNGRADE após o grace: pix/boleto sem pagamento e cartão cancelado
+//    (auto_renew=false) cujo período pago acabou. Cartão que renova é gerido pelos webhooks.
 async function expire(): Promise<number> {
   const { rows } = await pool.query<{ user_id: string }>(
     `select p.id as user_id from profiles p
-      where p.billing_method in ('pix','boleto')
-        and p.plan <> 'free'
+      where p.plan <> 'free'
         and p.current_period_end is not null
         and p.current_period_end + ($1 || ' days')::interval < now()
-        and not exists (
-          select 1 from billing_cycles bc
-           where bc.user_id = p.id and bc.status = 'PAID' and bc.period_end > now()::date)`,
+        and (
+          (p.billing_method in ('pix','boleto') and not exists (
+            select 1 from billing_cycles bc
+             where bc.user_id = p.id and bc.status = 'PAID' and bc.period_end > now()::date))
+          or (p.billing_method = 'card' and p.auto_renew = false)
+        )`,
     [env.graceDays],
   );
   for (const r of rows) {

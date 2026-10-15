@@ -13,11 +13,14 @@ router.get('/me', requireAuth, asyncHandler(async (req: AuthedRequest, res: Resp
   const { rows } = await pool.query<{
     full_name: string | null; plan: string; email_verified: boolean; ai_used: string;
     billing_method: string | null; current_period_end: Date | null;
+    billing_cycle: string | null; auto_renew: boolean | null;
   }>(
     `select p.full_name,
             p.plan,
             p.billing_method,
             p.current_period_end,
+            p.billing_cycle,
+            p.auto_renew,
             u.email_verified,
             (select count(*)::bigint from ai_usage a
               where a.user_id = p.id and a.created_at >= date_trunc('month', now())) as ai_used
@@ -38,6 +41,8 @@ router.get('/me', requireAuth, asyncHandler(async (req: AuthedRequest, res: Resp
     // Para a UI de faturamento: trilho (card/pix/boleto) e fim do período pago.
     billingMethod: plan === 'free' ? null : (row?.billing_method ?? null),
     currentPeriodEnd: plan === 'free' ? null : (row?.current_period_end ?? null),
+    billingCycle: plan === 'free' ? null : (row?.billing_cycle === 'yearly' ? 'yearly' : 'monthly'),
+    autoRenew: plan === 'free' ? null : (row?.auto_renew ?? true),
     limits: {
       aiMonthly: def.aiMonthly,
       aiUsed: Number(row?.ai_used ?? 0),
