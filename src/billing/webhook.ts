@@ -91,8 +91,22 @@ async function handleEvent(evt: AsaasWebhookEvent): Promise<void> {
   const userId = await resolveUserId(evt, session);
   if (!userId) { log('warn', 'asaas_webhook_sem_usuario', { type }); return; }
 
-  // Cancelamento/inativação de assinatura (cartão) -> downgrade imediato.
-  if (SUB_END.has(type)) { await setPlan(userId, 'free'); return; }
+  // Cancelamento/inativação de assinatura (cartão) -> downgrade imediato — mas só se for a
+  // assinatura VIGENTE do perfil. Evento atrasado de uma assinatura antiga (ex.: cancelou, assinou
+  // de novo e só então chegou o INACTIVATED da anterior) não pode derrubar o plano atual.
+  if (SUB_END.has(type)) {
+    const endedSub = evt.subscription?.id ?? p?.subscription ?? null;
+    const cur = await pool.query<{ asaas_subscription_id: string | null }>(
+      'select asaas_subscription_id from profiles where id = $1', [userId],
+    );
+    const currentSub = cur.rows[0]?.asaas_subscription_id ?? null;
+    if (endedSub && currentSub && endedSub !== currentSub) {
+      log('info', 'asaas_sub_end_ignorado_assinatura_antiga', { type, endedSub });
+      return;
+    }
+    await setPlan(userId, 'free');
+    return;
+  }
 
   // PIX/boleto vencido: NÃO derruba; só marca o ciclo OVERDUE (downgrade fica com o job).
   if (type === 'PAYMENT_OVERDUE') {
@@ -107,6 +121,16 @@ async function handleEvent(evt: AsaasWebhookEvent): Promise<void> {
 
   if (!ACTIVATE.has(type)) return; // ignora ruído (idempotência já registrou)
 
+  // Idempotência POR PAGAMENTO (a do topo é por evento): no cartão o Asaas manda
+  // PAYMENT_CONFIRMED e depois PAYMENT_RECEIVED para a MESMA cobrança — sem esta trava cada
+  // pagamento estendia o período duas vezes (+60 dias). A marca só é gravada depois do setPlan,
+  // então uma falha no meio continua reprocessável pela reentrega do Asaas.
+  const paymentKey = p?.id ? `payment:${p.id}` : null;
+  if (paymentKey) {
+    const seen = await pool.query('select 1 from processed_webhook_events where event_id = $1', [paymentKey]);
+    if ((seen.rowCount ?? 0) > 0) return;
+  }
+
   const value = p?.value;
   // Tier: exato pela sessão de checkout; senão pelo valor da cobrança; fallback no menor pago.
   const plan: PlanId = session?.plan ?? (value != null ? planForValue(value) : null) ?? 'essencial';
@@ -119,6 +143,7 @@ async function handleEvent(evt: AsaasWebhookEvent): Promise<void> {
     const start = nextPeriodStart(await getCurrentPeriodEnd(userId), now);
     const periodEnd = addDays(start, 30);
     await setPlan(userId, plan, { customerId, subId: p.subscription, billingMethod: 'card', periodEnd: epochSec(periodEnd) });
+    await markPaymentActivated(paymentKey, type);
     return;
   }
 
@@ -133,4 +158,15 @@ async function handleEvent(evt: AsaasWebhookEvent): Promise<void> {
     });
   }
   await setPlan(userId, plan, { customerId, billingMethod: method, periodEnd: epochSec(periodEnd) });
+  await markPaymentActivated(paymentKey, type);
+}
+
+// Reaproveita processed_webhook_events com chave sintética `payment:<id>` (ids de evento do
+// Asaas são `evt_...`, então não colidem).
+async function markPaymentActivated(paymentKey: string | null, type: string): Promise<void> {
+  if (!paymentKey) return;
+  await pool.query(
+    'insert into processed_webhook_events (event_id, type) values ($1,$2) on conflict (event_id) do nothing',
+    [paymentKey, type],
+  );
 }

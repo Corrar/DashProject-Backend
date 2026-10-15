@@ -2,8 +2,10 @@
 // Limites de UX, gate server-side e valores de cobrança Asaas derivam TODOS daqui.
 // Nada de limites em env: mudar um plano = mudar este arquivo.
 
+// free.aiMonthly = 0: /tools/analyze exige plano pago (requirePlan('essencial')), então o Free
+// não tem cota de IA — o /me não pode anunciar uma cota que o gate nunca libera.
 export const PLANS = {
-  free:      { rank: 0, aiMonthly: 3,   maxRows: 5000,    canExport: false, shareLinks: false, removeBranding: false, asaasValue: 0 },
+  free:      { rank: 0, aiMonthly: 0,   maxRows: 5000,    canExport: false, shareLinks: false, removeBranding: false, asaasValue: 0 },
   essencial: { rank: 1, aiMonthly: 50,  maxRows: 100000,  canExport: true,  shareLinks: false, removeBranding: false, asaasValue: 29.90 },
   pro:       { rank: 2, aiMonthly: 300, maxRows: 1000000, canExport: true,  shareLinks: true,  removeBranding: true,  asaasValue: 49.90 },
 } as const;

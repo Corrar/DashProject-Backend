@@ -12,7 +12,7 @@ Pagamentos via **Asaas** (REST, sem SDK).
 
 | Plano | IA/mês | maxRows | export | shareLinks | sem marca | R$/mês |
 |---|---|---|---|---|---|---|
-| `free` | 3 | 5.000 | ✗ | ✗ | ✗ | 0 |
+| `free` | — (IA só nos pagos) | 5.000 | ✗ | ✗ | ✗ | 0 |
 | `essencial` | 50 | 100.000 | ✓ | ✗ | ✗ | 29,90 |
 | `pro` | 300 | 1.000.000 | ✓ | ✓ | ✓ | 49,90 |
 
@@ -56,7 +56,7 @@ webhooks).
 | POST | `/auth/request-reset` | público | dispara e-mail de reset |
 | POST | `/auth/reset` | público | redefine senha via token |
 | GET  | `/me` | Bearer | perfil + `plan` + `limits` (gate de UX no frontend) |
-| POST | `/billing/checkout` | Bearer | cria Checkout Asaas (`{plan, method:'card'\|'pix'}` → `{url}`) |
+| POST | `/billing/checkout` | Bearer | cria Checkout Asaas (`{plan, method:'card'\|'pix'}` → `{url}`); 409 `plano_ja_ativo` (tier igual/inferior) ou `assinatura_ativa` (cartão ativo: cancelar antes de trocar) |
 | POST | `/billing/cancel` | Bearer + pago | cancela a assinatura no Asaas (trilho cartão) |
 | POST | `/billing/webhook` | token Asaas (header) | **única** fonte que escreve `plan` |
 | POST | `/jobs/billing-tick` | header `x-jobs-secret` | cron diário: gera renovações Pix/boleto, lembretes e downgrade |
