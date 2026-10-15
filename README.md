@@ -61,6 +61,10 @@ webhooks).
 | POST | `/billing/webhook` | token Asaas (header) | **única** fonte que escreve `plan` |
 | POST | `/jobs/billing-tick` | header `x-jobs-secret` | cron diário: gera renovações Pix/boleto, lembretes e downgrade |
 | POST | `/tools/analyze` | Bearer + **pago** | narrativa Gemini (gate + quota mensal de IA) |
+| POST | `/share` | Bearer + **Pro** | cria link público a partir do retrato do dashboard (`{title, payload}` → `{slug, url}`); 409 `limite_links` (50 ativos) |
+| GET  | `/share` | Bearer | links ativos do usuário |
+| DELETE | `/share/:slug` | Bearer | desativa um link próprio |
+| GET  | `/share/:slug` | público | retrato para a página `?s=<slug>`; 404 se desativado ou se o dono não é mais Pro |
 
 ## Subir local
 

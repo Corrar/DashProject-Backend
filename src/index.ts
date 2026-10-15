@@ -10,6 +10,7 @@ import billingRoutes from './billing/routes';
 import toolsRoutes from './tools/routes';
 import accountRoutes from './account';
 import jobsRoutes from './jobs/routes';
+import shareRoutes from './share/routes';
 
 const app = express();
 app.set('trust proxy', 1); // Render fica atrás de proxy — necessário p/ secure cookies e IP real.
@@ -29,6 +30,7 @@ app.use('/auth', authRoutes);
 app.use('/billing', billingRoutes);
 app.use('/tools', toolsRoutes);
 app.use('/jobs', jobsRoutes);
+app.use('/share', shareRoutes);
 app.use('/', accountRoutes);
 
 app.use((_req, res) => { res.status(404).json({ error: 'nao_encontrado' }); });
