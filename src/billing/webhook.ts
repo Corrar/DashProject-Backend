@@ -132,8 +132,9 @@ async function handleEvent(evt: AsaasWebhookEvent): Promise<void> {
   }
 
   const value = p?.value;
-  // Tier: exato pela sessão de checkout; senão pelo valor da cobrança; fallback no menor pago.
-  const plan: PlanId = session?.plan ?? (value != null ? planForValue(value) : null) ?? 'essencial';
+  // Tier pelo VALOR pago (reflete troca de plano na assinatura: as renovações podem continuar
+  // ligadas à sessão do checkout original); senão a sessão de checkout; fallback no menor pago.
+  const plan: PlanId = (value != null ? planForValue(value) : null) ?? session?.plan ?? 'essencial';
   const method = methodOf(p?.billingType);
   const customerId = p?.customer ?? null; // gravado via setPlan => próximos eventos resolvem por customer
   const now = new Date();

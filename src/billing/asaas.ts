@@ -202,6 +202,16 @@ export async function createPayment(opts: {
   return { id: resp.id, invoiceUrl: resp.invoiceUrl };
 }
 
+// Troca de plano no trilho cartão: muda o valor da MESMA assinatura (POST /v3/subscriptions/{id},
+// "atualizar assinatura existente"). updatePendingPayments também corrige a cobrança do próximo
+// ciclo se o Asaas já a tiver gerado. O tier efetivo segue o valor pago (webhook → planForValue).
+export async function updateSubscriptionPlan(subId: string, plan: 'essencial' | 'pro'): Promise<void> {
+  await asaasFetch<unknown>(`/subscriptions/${subId}`, {
+    method: 'POST',
+    body: { value: PLANS[plan].asaasValue, description: `Plano ${plan} (mensal)`, updatePendingPayments: true },
+  });
+}
+
 // Cancela a assinatura no Asaas. O downgrade p/ 'free' vem pelo webhook (não escrevemos aqui).
 export async function cancelSubscription(userId: string): Promise<void> {
   const { rows } = await pool.query<{ asaas_subscription_id: string | null }>(

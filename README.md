@@ -55,8 +55,9 @@ webhooks).
 | POST | `/auth/verify-email` | público | confirma e-mail via token |
 | POST | `/auth/request-reset` | público | dispara e-mail de reset |
 | POST | `/auth/reset` | público | redefine senha via token |
-| GET  | `/me` | Bearer | perfil + `plan` + `limits` (gate de UX no frontend) |
+| GET  | `/me` | Bearer | perfil + `plan` + `limits` + `billingMethod`/`currentPeriodEnd` (gate de UX no frontend) |
 | POST | `/billing/checkout` | Bearer | cria Checkout Asaas (`{plan, method:'card'\|'pix'}` → `{url}`); 409 `plano_ja_ativo` (tier igual/inferior) ou `assinatura_ativa` (cartão ativo: cancelar antes de trocar) |
+| POST | `/billing/change-plan` | Bearer + pago | troca de tier na mesma assinatura do cartão (`{plan}`): upgrade libera na hora, downgrade vale no próximo ciclo; 409 `sem_assinatura_cartao` no Pix |
 | POST | `/billing/cancel` | Bearer + pago | cancela a assinatura no Asaas (trilho cartão) |
 | POST | `/billing/webhook` | token Asaas (header) | **única** fonte que escreve `plan` |
 | POST | `/jobs/billing-tick` | header `x-jobs-secret` | cron diário: gera renovações Pix/boleto, lembretes e downgrade |
