@@ -78,7 +78,7 @@ webhooks).
 | POST | `/billing/change-plan` | Bearer + pago | troca tier e/ou ciclo na mesma assinatura do cartão (`{plan, cycle?}`): upgrade libera na hora, downgrade e troca de ciclo valem na próxima cobrança; 409 `sem_assinatura_cartao` no Pix, `assinatura_cancelada` após cancelar |
 | POST | `/billing/cancel` | Bearer + pago | cancela a assinatura no Asaas (trilho cartão); responde `{ok, accessUntil}` — o acesso segue até o fim do período pago |
 | POST | `/billing/webhook` | token Asaas (header) | **única** fonte que escreve `plan` |
-| POST | `/jobs/billing-tick` | header `x-jobs-secret` | cron diário: gera renovações Pix/boleto, lembretes e downgrade |
+| POST | `/jobs/billing-tick` | header `x-jobs-secret` | cron diário: gera renovações Pix/boleto, lembretes, downgrade e limpeza (sessões e links de e-mail vencidos há 30 dias, IDs de webhook com 90 dias) |
 | POST | `/tools/analyze` | Bearer | narrativa Gemini (quota mensal de IA do plano; Free = 1) |
 | POST | `/share` | Bearer + **Pro** | cria link público a partir do retrato do dashboard (`{title, payload}` → `{slug, url}`); 409 `limite_links` (50 ativos) |
 | GET  | `/share` | Bearer | links ativos do usuário |

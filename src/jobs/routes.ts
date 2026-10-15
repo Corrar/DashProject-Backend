@@ -128,6 +128,23 @@ async function expire(): Promise<number> {
   return rows.length;
 }
 
+// D) LIMPEZA (minimização de dados, LGPD): tokens de sessão vencidos ou
+//    revogados há mais de 30 dias (guardam IP e navegador), links de e-mail
+//    usados/vencidos e IDs de webhook com mais de 90 dias (a idempotência só
+//    precisa da janela de reentrega do Asaas).
+async function cleanup(): Promise<number> {
+  const a = await pool.query(
+    "delete from refresh_tokens where coalesce(revoked_at, expires_at) < now() - interval '30 days'",
+  );
+  const b = await pool.query(
+    "delete from email_tokens where coalesce(used_at, expires_at) < now() - interval '30 days'",
+  );
+  const c = await pool.query(
+    "delete from processed_webhook_events where processed_at < now() - interval '90 days'",
+  );
+  return (a.rowCount ?? 0) + (b.rowCount ?? 0) + (c.rowCount ?? 0);
+}
+
 router.post('/billing-tick', asyncHandler(async (req: Request, res: Response) => {
   if (!env.jobsSecret || req.headers['x-jobs-secret'] !== env.jobsSecret) {
     res.status(401).json({ error: 'nao_autorizado' });
@@ -136,8 +153,9 @@ router.post('/billing-tick', asyncHandler(async (req: Request, res: Response) =>
   const generated = await generate();
   const remindersSent = await reminders();
   const downgraded = await expire();
-  log('info', 'billing_tick', { generated, remindersSent, downgraded });
-  res.json({ ok: true, generated, reminders: remindersSent, downgraded });
+  const purged = await cleanup();
+  log('info', 'billing_tick', { generated, remindersSent, downgraded, purged });
+  res.json({ ok: true, generated, reminders: remindersSent, downgraded, purged });
 }));
 
 export default router;
