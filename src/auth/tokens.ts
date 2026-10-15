@@ -3,8 +3,9 @@ import crypto from 'node:crypto';
 import { env } from '../env';
 import { pool } from '../db';
 import { HttpError } from '../lib';
+import { isPlanId, type PlanId } from '../plans';
 
-export interface AccessClaims { sub: string; email: string; plan: 'free' | 'pro'; }
+export interface AccessClaims { sub: string; email: string; plan: PlanId; }
 
 export function signAccessToken(c: AccessClaims): string {
   return jwt.sign(c, env.jwtAccessSecret, { expiresIn: env.accessTtlSec, algorithm: 'HS256' });
@@ -14,7 +15,7 @@ export function verifyAccessToken(token: string): AccessClaims {
   try {
     const p = jwt.verify(token, env.jwtAccessSecret, { algorithms: ['HS256'] }) as jwt.JwtPayload;
     if (typeof p.sub !== 'string' || typeof p.email !== 'string') throw new Error('claims');
-    return { sub: p.sub, email: p.email, plan: p.plan === 'pro' ? 'pro' : 'free' };
+    return { sub: p.sub, email: p.email, plan: isPlanId(p.plan) ? p.plan : 'free' };
   } catch {
     throw new HttpError(401, 'token_invalido');
   }

@@ -13,6 +13,8 @@ const pool = new Pool({
 
 async function main(): Promise<void> {
   const dir = __dirname;
+  // Reaplica TODOS os .sql a cada execução: toda migration precisa ser idempotente e nunca
+  // destrutiva para dados existentes (sem drop de coluna que outra migration recria).
   const files = fs.readdirSync(dir).filter((f) => f.endsWith('.sql')).sort();
   for (const f of files) {
     const sql = fs.readFileSync(path.join(dir, f), 'utf8');

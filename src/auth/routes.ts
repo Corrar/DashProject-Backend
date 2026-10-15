@@ -7,6 +7,7 @@ import { HttpError, asyncHandler, log } from '../lib';
 import { assertStrongPassword, hashPassword, verifyPassword } from './passwords';
 import { signAccessToken, issueRefreshToken, rotateRefreshToken, revokeRefreshToken } from './tokens';
 import { sendVerifyEmail, sendResetEmail } from './email';
+import { isPlanId, type PlanId } from '../plans';
 
 const router = express.Router();
 router.use(express.json({ limit: '64kb' }));
@@ -21,22 +22,25 @@ function sha256(s: string): string {
   return crypto.createHash('sha256').update(s).digest('hex');
 }
 
-function setRefreshCookie(res: Response, raw: string): void {
+function refreshCookieOptions() {
   const prod = env.nodeEnv === 'production';
-  res.cookie(env.refreshCookieName, raw, {
+  return {
     httpOnly: true,
     secure: prod,
-    sameSite: prod ? 'none' : 'lax', // cross-site (Vercel -> Render) exige none+secure
+    sameSite: prod ? ('none' as const) : ('lax' as const), // cross-site (Vercel -> Render) exige none+secure
     path: '/auth',
-    maxAge: env.refreshTtlSec * 1000,
     ...(env.cookieDomain ? { domain: env.cookieDomain } : {}),
-  });
+  };
 }
+function setRefreshCookie(res: Response, raw: string): void {
+  res.cookie(env.refreshCookieName, raw, { ...refreshCookieOptions(), maxAge: env.refreshTtlSec * 1000 });
+}
+// O navegador só apaga o cookie se os atributos baterem com os do set. Sem
+// SameSite=None+Secure, o Set-Cookie de remoção é descartado na resposta
+// cross-site e o refresh já revogado fica no navegador — no próximo boot ele
+// é reapresentado, cai na detecção de reuso e derruba TODAS as sessões do usuário.
 function clearRefreshCookie(res: Response): void {
-  res.clearCookie(env.refreshCookieName, {
-    path: '/auth',
-    ...(env.cookieDomain ? { domain: env.cookieDomain } : {}),
-  });
+  res.clearCookie(env.refreshCookieName, refreshCookieOptions());
 }
 
 async function emailToken(userId: string, purpose: 'verify' | 'reset', ttlMs: number): Promise<string> {
@@ -106,8 +110,9 @@ router.post('/login', asyncHandler(async (req, res) => {
   if (!row || !(await verifyPassword(body.password, row.password_hash))) {
     throw new HttpError(401, 'credenciais_invalidas');
   }
-  const planRow = await pool.query<{ plan: 'free' | 'pro' }>('select plan from profiles where id = $1', [row.id]);
-  const plan: 'free' | 'pro' = planRow.rows[0]?.plan === 'pro' ? 'pro' : 'free';
+  const planRow = await pool.query<{ plan: string }>('select plan from profiles where id = $1', [row.id]);
+  const rawPlan = planRow.rows[0]?.plan;
+  const plan: PlanId = isPlanId(rawPlan) ? rawPlan : 'free';
   const access = signAccessToken({ sub: row.id, email, plan });
   setRefreshCookie(res, await issueRefreshToken(row.id));
   res.json({ access_token: access, user: { id: row.id, email, plan, emailVerified: row.email_verified } });
@@ -118,12 +123,12 @@ router.post('/refresh', asyncHandler(async (req, res) => {
   const raw = req.cookies?.[env.refreshCookieName];
   if (!raw) throw new HttpError(401, 'sem_refresh');
   const { userId, newRaw } = await rotateRefreshToken(raw);
-  const u = await pool.query<{ email: string; plan: 'free' | 'pro' }>(
+  const u = await pool.query<{ email: string; plan: string }>(
     'select u.email, p.plan from users u join profiles p on p.id = u.id where u.id = $1', [userId],
   );
   const row = u.rows[0];
   if (!row) throw new HttpError(401, 'usuario_inexistente');
-  const plan: 'free' | 'pro' = row.plan === 'pro' ? 'pro' : 'free';
+  const plan: PlanId = isPlanId(row.plan) ? row.plan : 'free';
   setRefreshCookie(res, newRaw);
   res.json({ access_token: signAccessToken({ sub: userId, email: row.email, plan }) });
 }));
@@ -156,8 +161,14 @@ router.post('/request-reset', asyncHandler(async (req, res) => {
   const { rows } = await pool.query<{ id: string }>('select id from users where email = $1', [email.toLowerCase()]);
   const row = rows[0];
   if (row) {
-    const token = await emailToken(row.id, 'reset', 60 * 60 * 1000);
-    await sendResetEmail(email.toLowerCase(), `${env.appUrl}/?reset=${token}`);
+    // Best-effort, como no signup: uma falha do provedor não pode virar 500 só
+    // para e-mails cadastrados (isso revelaria quais e-mails existem).
+    try {
+      const token = await emailToken(row.id, 'reset', 60 * 60 * 1000);
+      await sendResetEmail(email.toLowerCase(), `${env.appUrl}/?reset=${token}`);
+    } catch (e) {
+      log('warn', 'reset_email_falhou', { userId: row.id, motivo: e instanceof Error ? e.message : String(e) });
+    }
   }
   res.json({ ok: true });
 }));
