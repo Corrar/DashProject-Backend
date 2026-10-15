@@ -1,10 +1,10 @@
 import express, { type Response } from 'express';
 import { z } from 'zod';
-import { HttpError, asyncHandler } from '../lib';
+import { HttpError, asyncHandler, log } from '../lib';
 import { requireAuth, requirePlan, type AuthedRequest } from '../auth/middleware';
 import { pool } from '../db';
 import { PLANS } from '../plans';
-import { createCardCheckout, createPixCheckout, cancelSubscription, setPlan, updateSubscriptionPlan } from './asaas';
+import { createCardCheckout, createPixCheckout, cancelSubscription, setPlan, updateSubscriptionPlan, listCustomerPayments } from './asaas';
 
 const router = express.Router();
 router.use(express.json({ limit: '16kb' }));
@@ -89,6 +89,37 @@ router.post('/cancel', requireAuth, requirePlan('essencial'), asyncHandler(async
   await cancelSubscription(req.user!.id);
   const cur = await billingOf(req.user!.id);
   res.json({ ok: true, accessUntil: cur?.current_period_end ?? null });
+}));
+
+// GET /billing/history — faturas reais do cliente no Asaas (cartão e Pix), com
+// link da fatura. Se o Asaas estiver fora, cai nos ciclos Pix/boleto locais.
+router.get('/history', requireAuth, asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const { rows } = await pool.query<{ asaas_customer_id: string | null }>(
+    'select asaas_customer_id from profiles where id = $1', [req.user!.id],
+  );
+  const customer = rows[0]?.asaas_customer_id ?? null;
+  const local = async () => (await pool.query<{
+    asaas_payment_id: string | null; value: string; status: string; billing_type: string; due_date: Date | null;
+    invoice_url: string | null; plan: string; created_at: Date;
+  }>(
+    `select asaas_payment_id, value, status, billing_type, due_date, invoice_url, plan, created_at
+       from billing_cycles where user_id = $1 order by created_at desc limit 24`, [req.user!.id],
+  )).rows.map((c) => ({
+    id: c.asaas_payment_id ?? null, value: Number(c.value), status: c.status, method: c.billing_type,
+    description: `Plano ${c.plan}`, dueDate: c.due_date, paidAt: null, invoiceUrl: c.invoice_url,
+  }));
+  if (!customer) { res.json({ source: 'local', items: await local() }); return; }
+  try {
+    const items = (await listCustomerPayments(customer)).map((p) => ({
+      id: p.id, value: Number(p.value), status: p.status, method: p.billingType ?? null,
+      description: p.description ?? null, dueDate: p.dueDate ?? null,
+      paidAt: p.clientPaymentDate ?? p.paymentDate ?? null, invoiceUrl: p.invoiceUrl ?? null,
+    }));
+    res.json({ source: 'asaas', items });
+  } catch (e) {
+    log('warn', 'historico_asaas_indisponivel', { motivo: e instanceof Error ? e.message : String(e) });
+    res.json({ source: 'local', items: await local() });
+  }
 }));
 
 export default router;

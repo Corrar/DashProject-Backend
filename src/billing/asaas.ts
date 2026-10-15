@@ -233,3 +233,26 @@ export async function cancelSubscription(userId: string): Promise<void> {
   if (!subId) throw new HttpError(409, 'sem_assinatura_asaas');
   await asaasFetch<{ deleted?: boolean }>(`/subscriptions/${subId}`, { method: 'DELETE' });
 }
+
+// Cobranças do cliente no Asaas (cartão e Pix) para o histórico de faturas.
+export interface AsaasPaymentItem {
+  id: string; value: number; status: string; billingType?: string; description?: string | null;
+  dueDate?: string; paymentDate?: string | null; clientPaymentDate?: string | null; dateCreated?: string;
+  invoiceUrl?: string | null; subscription?: string | null;
+}
+export async function listCustomerPayments(customerId: string, limit = 24): Promise<AsaasPaymentItem[]> {
+  const resp = await asaasFetch<{ data?: AsaasPaymentItem[] }>(
+    `/payments?customer=${encodeURIComponent(customerId)}&limit=${limit}`, { method: 'GET' },
+  );
+  return Array.isArray(resp.data) ? resp.data : [];
+}
+
+// Cancela (remove) uma cobrança pendente — usado ao excluir a conta.
+export async function deletePayment(paymentId: string): Promise<void> {
+  await asaasFetch<unknown>(`/payments/${encodeURIComponent(paymentId)}`, { method: 'DELETE' });
+}
+
+// Cancela a assinatura pelo id (a conta pode já estar sendo apagada).
+export async function deleteSubscription(subId: string): Promise<void> {
+  await asaasFetch<unknown>(`/subscriptions/${encodeURIComponent(subId)}`, { method: 'DELETE' });
+}

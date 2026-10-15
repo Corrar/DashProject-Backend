@@ -62,7 +62,18 @@ webhooks).
 | POST | `/auth/verify-email` | público | confirma e-mail via token |
 | POST | `/auth/request-reset` | público | dispara e-mail de reset |
 | POST | `/auth/reset` | público | redefine senha via token |
-| GET  | `/me` | Bearer | perfil + `plan` + `limits` + `billingMethod`/`currentPeriodEnd`/`billingCycle`/`autoRenew` (gate de UX no frontend) |
+| POST | `/auth/resend-verification` | Bearer | reenvia o link de confirmação (409 `email_ja_confirmado`) |
+| GET  | `/me` | Bearer | perfil + `plan` + `limits` + `billingMethod`/`currentPeriodEnd`/`billingCycle`/`autoRenew` + `createdAt`/`waitlist` (gate de UX no frontend) |
+| PATCH | `/me` | Bearer | `{fullName}` |
+| POST | `/me/password` | Bearer | `{current, next}`: troca a senha, encerra as outras sessões e avisa por e-mail (403 `senha_atual_incorreta`) |
+| GET  | `/me/sessions` | Bearer | sessões ativas (dispositivo, IP mascarado, último uso, `current`) |
+| DELETE | `/me/sessions/:id` | Bearer | encerra uma sessão |
+| POST | `/me/sessions/revoke-others` | Bearer | encerra todas menos a atual |
+| GET  | `/me/ai-usage` | Bearer | análises de IA por mês (12 meses) + as 20 mais recentes |
+| POST | `/me/waitlist` | Bearer | `{feature:'workspace'}` — lista de espera persistida |
+| GET  | `/me/export` | Bearer | JSON com tudo o que o servidor guarda da conta (portabilidade, LGPD) |
+| DELETE | `/me` | Bearer | `{password, confirm:'EXCLUIR'}`: cancela a assinatura no Asaas (se falhar, nada é apagado), cancela cobranças Pix pendentes, arquiva cobranças em `billing_archive` sem vínculo pessoal e apaga a conta |
+| GET  | `/billing/history` | Bearer | faturas do cliente no Asaas com link (fallback: ciclos Pix/boleto locais) |
 | POST | `/billing/checkout` | Bearer | cria Checkout Asaas (`{plan, method:'card'\|'pix', cycle:'monthly'\|'yearly'}` → `{url}`); 409 `plano_ja_ativo` (tier inferior, ou mesmo plano e ciclo) ou `assinatura_ativa` (cartão ativo: usar change-plan). Quem cancelou e ainda está no período pode reassinar |
 | POST | `/billing/change-plan` | Bearer + pago | troca tier e/ou ciclo na mesma assinatura do cartão (`{plan, cycle?}`): upgrade libera na hora, downgrade e troca de ciclo valem na próxima cobrança; 409 `sem_assinatura_cartao` no Pix, `assinatura_cancelada` após cancelar |
 | POST | `/billing/cancel` | Bearer + pago | cancela a assinatura no Asaas (trilho cartão); responde `{ok, accessUntil}` — o acesso segue até o fim do período pago |
@@ -73,6 +84,17 @@ webhooks).
 | GET  | `/share` | Bearer | links ativos do usuário |
 | DELETE | `/share/:slug` | Bearer | desativa um link próprio |
 | GET  | `/share/:slug` | público | retrato para a página `?s=<slug>`; 404 se desativado ou se o dono não é mais Pro |
+
+## Sessões e segurança
+
+- Cada login abre uma **família** de refresh tokens; a rotação mantém a família (é a "sessão" da tela
+  de conta) e o access token leva `sid` = família, para marcar a sessão atual.
+- Reapresentar um token **rotacionado** é tratado como roubo e derruba só aquela família. Token de
+  sessão encerrada de propósito (logout, troca de senha, "encerrar sessão") só recebe 401
+  `sessao_encerrada`, sem derrubar as outras sessões.
+- Limite de tentativas em memória (`src/rateLimit.ts`, uma instância no Render): login 10/15 min por
+  IP+e-mail, cadastro 10/h, reset 5/h, reenvio de confirmação 3/h, troca de senha 10/h, exclusão 5/h.
+  Excedeu → 429 `muitas_tentativas` com `Retry-After`.
 
 ## Subir local
 

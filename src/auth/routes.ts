@@ -5,9 +5,11 @@ import { pool } from '../db';
 import { env } from '../env';
 import { HttpError, asyncHandler, log } from '../lib';
 import { assertStrongPassword, hashPassword, verifyPassword } from './passwords';
-import { signAccessToken, issueRefreshToken, rotateRefreshToken, revokeRefreshToken } from './tokens';
+import { signAccessToken, issueRefreshToken, rotateRefreshToken, revokeRefreshToken, type SessionCtx } from './tokens';
 import { sendVerifyEmail, sendResetEmail } from './email';
 import { isPlanId, type PlanId } from '../plans';
+import { requireAuth, type AuthedRequest } from './middleware';
+import { rateLimit } from '../rateLimit';
 
 const router = express.Router();
 router.use(express.json({ limit: '64kb' }));
@@ -21,6 +23,20 @@ const signupSchema = credsSchema.extend({ full_name: z.string().max(120).optiona
 function sha256(s: string): string {
   return crypto.createHash('sha256').update(s).digest('hex');
 }
+
+export function sessionCtx(req: express.Request): SessionCtx {
+  return { userAgent: req.get('user-agent') ?? null, ip: req.ip ?? null };
+}
+
+// Limites por IP (+ e-mail no login): força bruta e spam de e-mail.
+const emailKey = (req: express.Request): string | null => {
+  const e = (req.body as { email?: unknown } | undefined)?.email;
+  return typeof e === 'string' ? e.toLowerCase().slice(0, 254) : null;
+};
+const loginLimit = rateLimit({ name: 'login', windowMs: 15 * 60_000, max: 10, key: emailKey });
+const signupLimit = rateLimit({ name: 'signup', windowMs: 60 * 60_000, max: 10 });
+const resetLimit = rateLimit({ name: 'reset', windowMs: 60 * 60_000, max: 5 });
+const resendLimit = rateLimit({ name: 'resend', windowMs: 60 * 60_000, max: 3 });
 
 function refreshCookieOptions() {
   const prod = env.nodeEnv === 'production';
@@ -39,7 +55,7 @@ function setRefreshCookie(res: Response, raw: string): void {
 // SameSite=None+Secure, o Set-Cookie de remoção é descartado na resposta
 // cross-site e o refresh já revogado fica no navegador — no próximo boot ele
 // é reapresentado, cai na detecção de reuso e derruba TODAS as sessões do usuário.
-function clearRefreshCookie(res: Response): void {
+export function clearRefreshCookie(res: Response): void {
   res.clearCookie(env.refreshCookieName, refreshCookieOptions());
 }
 
@@ -53,7 +69,7 @@ async function emailToken(userId: string, purpose: 'verify' | 'reset', ttlMs: nu
 }
 
 // POST /auth/signup
-router.post('/signup', asyncHandler(async (req, res) => {
+router.post('/signup', signupLimit, asyncHandler(async (req, res) => {
   const body = signupSchema.parse(req.body);
   assertStrongPassword(body.password);
   const email = body.email.toLowerCase();
@@ -93,13 +109,14 @@ router.post('/signup', asyncHandler(async (req, res) => {
     });
   }
 
-  const access = signAccessToken({ sub: userId, email, plan: 'free' });
-  setRefreshCookie(res, await issueRefreshToken(userId));
+  const session = await issueRefreshToken(userId, sessionCtx(req));
+  const access = signAccessToken({ sub: userId, email, plan: 'free', sid: session.familyId });
+  setRefreshCookie(res, session.raw);
   res.status(201).json({ access_token: access, user: { id: userId, email, plan: 'free', emailVerified: false } });
 }));
 
 // POST /auth/login
-router.post('/login', asyncHandler(async (req, res) => {
+router.post('/login', loginLimit, asyncHandler(async (req, res) => {
   const body = credsSchema.parse(req.body);
   const email = body.email.toLowerCase();
   const { rows } = await pool.query<{ id: string; password_hash: string; email_verified: boolean }>(
@@ -113,8 +130,9 @@ router.post('/login', asyncHandler(async (req, res) => {
   const planRow = await pool.query<{ plan: string }>('select plan from profiles where id = $1', [row.id]);
   const rawPlan = planRow.rows[0]?.plan;
   const plan: PlanId = isPlanId(rawPlan) ? rawPlan : 'free';
-  const access = signAccessToken({ sub: row.id, email, plan });
-  setRefreshCookie(res, await issueRefreshToken(row.id));
+  const session = await issueRefreshToken(row.id, sessionCtx(req));
+  const access = signAccessToken({ sub: row.id, email, plan, sid: session.familyId });
+  setRefreshCookie(res, session.raw);
   res.json({ access_token: access, user: { id: row.id, email, plan, emailVerified: row.email_verified } });
 }));
 
@@ -122,7 +140,7 @@ router.post('/login', asyncHandler(async (req, res) => {
 router.post('/refresh', asyncHandler(async (req, res) => {
   const raw = req.cookies?.[env.refreshCookieName];
   if (!raw) throw new HttpError(401, 'sem_refresh');
-  const { userId, newRaw } = await rotateRefreshToken(raw);
+  const { userId, newRaw, familyId } = await rotateRefreshToken(raw, sessionCtx(req));
   const u = await pool.query<{ email: string; plan: string }>(
     'select u.email, p.plan from users u join profiles p on p.id = u.id where u.id = $1', [userId],
   );
@@ -130,7 +148,7 @@ router.post('/refresh', asyncHandler(async (req, res) => {
   if (!row) throw new HttpError(401, 'usuario_inexistente');
   const plan: PlanId = isPlanId(row.plan) ? row.plan : 'free';
   setRefreshCookie(res, newRaw);
-  res.json({ access_token: signAccessToken({ sub: userId, email: row.email, plan }) });
+  res.json({ access_token: signAccessToken({ sub: userId, email: row.email, plan, sid: familyId }) });
 }));
 
 // POST /auth/logout
@@ -156,7 +174,7 @@ router.post('/verify-email', asyncHandler(async (req, res) => {
 }));
 
 // POST /auth/request-reset { email }  — sempre 200 (não revela e-mail).
-router.post('/request-reset', asyncHandler(async (req, res) => {
+router.post('/request-reset', resetLimit, asyncHandler(async (req, res) => {
   const { email } = z.object({ email: z.string().email() }).parse(req.body);
   const { rows } = await pool.query<{ id: string }>('select id from users where email = $1', [email.toLowerCase()]);
   const row = rows[0];
@@ -174,7 +192,7 @@ router.post('/request-reset', asyncHandler(async (req, res) => {
 }));
 
 // POST /auth/reset { token, password }
-router.post('/reset', asyncHandler(async (req, res) => {
+router.post('/reset', resetLimit, asyncHandler(async (req, res) => {
   const { token, password } = z.object({ token: z.string().min(10), password: z.string() }).parse(req.body);
   assertStrongPassword(password);
   const { rows } = await pool.query<{ id: string; user_id: string; expires_at: Date; used_at: Date | null }>(
@@ -191,7 +209,7 @@ router.post('/reset', asyncHandler(async (req, res) => {
     await client.query('update email_tokens set used_at = now() where id = $1', [row.id]);
     await client.query('update users set password_hash = $1 where id = $2', [pwHash, row.user_id]);
     // invalida todas as sessões após reset
-    await client.query('update refresh_tokens set revoked_at = now() where user_id = $1 and revoked_at is null', [row.user_id]);
+    await client.query("update refresh_tokens set revoked_at = now(), revoked_reason = 'reset' where user_id = $1 and revoked_at is null", [row.user_id]);
     await client.query('commit');
   } catch (e) {
     await client.query('rollback').catch(() => {});
@@ -199,6 +217,21 @@ router.post('/reset', asyncHandler(async (req, res) => {
   } finally {
     client.release();
   }
+  res.json({ ok: true });
+}));
+
+// POST /auth/resend-verification — reenvia o link de confirmação (logado).
+router.post('/resend-verification', requireAuth, resendLimit, asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const { rows } = await pool.query<{ email: string; email_verified: boolean }>(
+    'select email, email_verified from users where id = $1', [req.user!.id],
+  );
+  const row = rows[0];
+  if (!row) throw new HttpError(404, 'usuario_inexistente');
+  if (row.email_verified) throw new HttpError(409, 'email_ja_confirmado');
+  // Links anteriores deixam de valer: só o mais novo confirma.
+  await pool.query("update email_tokens set used_at = now() where user_id = $1 and purpose = 'verify' and used_at is null", [req.user!.id]);
+  const token = await emailToken(req.user!.id, 'verify', 24 * 60 * 60 * 1000);
+  await sendVerifyEmail(row.email, `${env.appUrl}/?verify=${token}`);
   res.json({ ok: true });
 }));
 
