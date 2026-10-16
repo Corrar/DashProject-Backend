@@ -1,7 +1,10 @@
 # Dash — backend (CLAUDE.md)
 
-O estado do projeto e os próximos passos ficam no `CLAUDE.md` do frontend
-(`DashProject-Frontend`, seção 24 "Onde paramos"). As rotas estão no README.
+O estado do projeto fica no `CLAUDE.md` do frontend (`DashProject-Frontend`,
+seção 24 "Onde paramos") e as pendências, com checkboxes, em
+`DashProject-Frontend/PENDENCIAS.md` (inclui as do backend: migrations 006/007
+no Neon, variáveis do Render, webhook do Asaas, cron e keepalive). As rotas
+estão no README.
 
 Regras deste repositório:
 
