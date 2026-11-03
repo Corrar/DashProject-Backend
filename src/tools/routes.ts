@@ -9,24 +9,32 @@ import { generateNarrative } from './gemini';
 const router = express.Router();
 router.use(express.json({ limit: '256kb' }));
 
-// Contrato com o frontend (CLAUDE.md §8: ~20 linhas cruas de amostra p/ o Gemini).
+// Contrato com o frontend. Os insights são calculados no navegador (motor pandas
+// via Pyodide, ou o motor JS); a IA só ESCREVE o resumo em texto a partir desses
+// fatos. O frontend atual manda `facts` e `sampleRows: []` — nenhuma linha do
+// arquivo. `sampleRows` continua aceito por compatibilidade com versões antigas.
 const schema = z.object({
   datasetName: z.string().max(120).optional(),
-  columns: z.array(z.object({ name: z.string(), type: z.string().optional() })).max(200),
-  sampleRows: z.array(z.record(z.unknown())).max(50),
-  question: z.string().max(500).optional(),
+  columns: z.array(z.object({ name: z.string().max(200), type: z.string().max(40).nullish() })).max(200),
+  sampleRows: z.array(z.record(z.unknown())).max(50).optional().default([]),
+  facts: z.array(z.string().max(300)).max(40).optional().default([]),
+  question: z.string().max(500).nullish(),
 });
 
 function buildPrompt(input: z.infer<typeof schema>): string {
   const cols = input.columns.map((c) => `${c.name}${c.type ? ` (${c.type})` : ''}`).join(', ');
-  const sample = JSON.stringify(input.sampleRows.slice(0, 20));
+  const facts = input.facts.map((f) => `- ${f}`).join('\n');
+  const sample = input.sampleRows.length ? JSON.stringify(input.sampleRows.slice(0, 20)) : '';
   return [
-    'Voce e um analista de dados. Gere uma narrativa executiva, objetiva e em portugues do Brasil,',
-    'destacando tendencias, outliers e recomendacoes acionaveis. Nao invente numeros fora dos dados.',
+    'Voce e um analista de dados. Escreva um resumo executivo em portugues do Brasil, em ate 3 paragrafos curtos',
+    '(no maximo 150 palavras), seguido de ate 3 recomendacoes praticas em lista com "- ".',
+    'Use SOMENTE os numeros dos fatos abaixo, que ja foram calculados sobre a base inteira; nao invente numeros,',
+    'nao recalcule e nao repita a lista de fatos. Sem titulos e sem tabelas.',
     input.datasetName ? `Dataset: ${input.datasetName}.` : '',
     `Colunas: ${cols}.`,
-    `Amostra (JSON, ate 20 linhas): ${sample}.`,
-    input.question ? `Pergunta do usuario: ${input.question}` : '',
+    facts ? `Fatos calculados:\n${facts}` : '',
+    sample ? `Amostra (JSON, ate 20 linhas): ${sample}.` : '',
+    input.question ? `Contexto do usuario: ${input.question}` : '',
   ].filter(Boolean).join('\n');
 }
 
@@ -59,3 +67,5 @@ router.post('/analyze', requireAuth, asyncHandler(async (req: AuthedRequest, res
 }));
 
 export default router;
+
+export { schema as analyzeSchema, buildPrompt };
