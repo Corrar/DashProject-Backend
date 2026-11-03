@@ -7,7 +7,7 @@ Você (Claude Code) vai executar duas frentes:
 Arquitetura final: frontend estático (CDN React + Babel standalone, **sem bundler**) na Vercel → API Node/Express na Render → Postgres na Neon. **Asaas** cuida da cobrança em **dois trilhos** — (1) **cartão recorrente** (assinatura, renovação automática pelos webhooks) e (2) **Pix/boleto manual** (entrada por Checkout hospedado só-Pix; renovações geradas por um job via `POST /payments`) — com **3 tiers** (`free`/`essencial`/`pro`) e **quota mensal de IA**. **Supabase é removido por completo.**
 
 > Regras inegociáveis:
-> - **Nunca** commitar segredos (chave Asaas/Gemini/Resend, token de webhook, JWT secret, DATABASE_URL). Use env do Render / `.env` local (já no `.gitignore`).
+> - **Nunca** commitar segredos (chave Asaas/Anthropic/Resend, token de webhook, JWT secret, DATABASE_URL). Use env do Render / `.env` local (já no `.gitignore`).
 > - **Manter o frontend no branch `design-v2-integration`** (é a fonte da verdade, está à frente do `main`).
 > - O frontend é **CDN + Babel standalone**: componentes são funções globais, config vem de `window.*`. **Não** introduza `import`/bundler/Vite.
 > - Não altere a identidade visual nem o layout — só a camada de dados (auth, perfil, IA, billing).
@@ -49,13 +49,16 @@ Arquitetura final: frontend estático (CDN React + Babel standalone, **sem bundl
 1. Crie a API key → `RESEND_API_KEY`. Configure um remetente verificado → `EMAIL_FROM`.
 2. Sem `RESEND_API_KEY` o backend não quebra: ele **loga** o link de verificação/reset (modo dev).
 
-### A4. Gemini
-1. `GEMINI_API_KEY` (Google AI Studio). `GEMINI_MODEL` default `gemini-2.5-flash`.
+### A4. IA (Anthropic / Claude)
+1. Crie a chave em https://platform.claude.com → **API Keys** (`sk-ant-…`) e cadastre crédito em **Billing**.
+2. Render → serviço `dash-backend` → **Environment** → `ANTHROPIC_API_KEY` = a chave. Para rodar local, no `.env` (já no `.gitignore`).
+3. `ANTHROPIC_MODEL` (opcional) default `claude-opus-5-5`. Para gastar menos: `claude-haiku-5-5`.
+4. Sem a chave o backend sobe normalmente e `/tools/analyze` responde 503 `ia_nao_configurada`.
 
 ### A5. Deploy na Render
 1. Suba `dash-backend/` num repo Git (pode ser subpasta ou repo dedicado).
 2. Render → **New → Blueprint** (usa `render.yaml`) → conecte o repo.
-3. Preencha as env marcadas `sync:false`: `DATABASE_URL`, `APP_URL` (URL do frontend Vercel), `API_URL` (a própria URL do serviço Render), `CORS_ORIGIN` (inclua a origem exata do frontend Vercel), `ASAAS_API_KEY`, `ASAAS_ENV` (`production`), `ASAAS_WEBHOOK_TOKEN`, `JOBS_SECRET`, e as chaves Resend/Gemini. `RENEWAL_LEAD_DAYS` (5) e `GRACE_DAYS` (3) têm default no `render.yaml`. `JWT_ACCESS_SECRET` é gerado pelo Render.
+3. Preencha as env marcadas `sync:false`: `DATABASE_URL`, `APP_URL` (URL do frontend Vercel), `API_URL` (a própria URL do serviço Render), `CORS_ORIGIN` (inclua a origem exata do frontend Vercel), `ASAAS_API_KEY`, `ASAAS_ENV` (`production`), `ASAAS_WEBHOOK_TOKEN`, `JOBS_SECRET`, e as chaves Resend/Anthropic. `RENEWAL_LEAD_DAYS` (5) e `GRACE_DAYS` (3) têm default no `render.yaml`. `JWT_ACCESS_SECRET` é gerado pelo Render.
 4. Rode as migrations apontando para o Neon de produção: `DATABASE_URL=<neon-prod> npm run migrate`.
 5. **Webhook + Job:** configure-os no Asaas/cron conforme **A2b** (o cron do `/jobs/billing-tick` também serve de keepalive).
 6. **Keepalive:** crie um monitor no UptimeRobot batendo em `GET https://<API_URL>/health` a cada ~10 min (mitiga o cold start de 30–60s do plano free).

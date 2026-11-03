@@ -11,7 +11,9 @@ alter table profiles add column if not exists asaas_customer_id     text unique;
 alter table profiles add column if not exists asaas_subscription_id text;
 alter table profiles drop column if exists stripe_customer_id;
 alter table profiles drop column if exists stripe_subscription_id;
-alter table profiles drop column if exists current_period_end;
+-- current_period_end NÃO é removida aqui: o runner (migrations/run.ts) reaplica TODOS os
+-- arquivos a cada `npm run migrate`, e o 003 depende dessa coluna (trilho Pix/boleto). Um drop
+-- aqui apagava o fim de período de todos os assinantes a cada execução (o 003 só a recriava vazia).
 
 -- 3) Consumo de IA: append-only. O uso do mês é DERIVADO por contagem (sem cron de reset).
 create table if not exists ai_usage (

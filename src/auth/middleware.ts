@@ -5,7 +5,7 @@ import { HttpError, asyncHandler } from '../lib';
 import { type PlanId, isPlanId, planAllows } from '../plans';
 
 export interface AuthedRequest extends Request {
-  user?: { id: string; email: string; plan: PlanId };
+  user?: { id: string; email: string; plan: PlanId; sid?: string };
 }
 
 // Cache curto do plano: o webhook é a fonte da verdade e muda raramente.
@@ -38,7 +38,7 @@ export const requireAuth = asyncHandler(async (req: AuthedRequest, _res, next) =
   const token = bearer(req);
   if (!token) throw new HttpError(401, 'token_ausente');
   const claims = verifyAccessToken(token);
-  req.user = { id: claims.sub, email: claims.email, plan: await planOf(claims.sub) };
+  req.user = { id: claims.sub, email: claims.email, plan: await planOf(claims.sub), sid: claims.sid };
   next();
 });
 

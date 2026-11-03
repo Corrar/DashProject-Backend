@@ -39,6 +39,25 @@ export async function sendResetEmail(to: string, link: string): Promise<void> {
   );
 }
 
+export async function sendPasswordChangedEmail(to: string): Promise<void> {
+  await send(
+    to,
+    'Sua senha foi alterada - Dash',
+    `<p>A senha da sua conta Dash acabou de ser alterada e as outras sessões foram encerradas.</p>
+     <p>Se nao foi voce, redefina a senha em ${env.appUrl} (Entrar &gt; Esqueci minha senha) e fale com o suporte.</p>`,
+  );
+}
+
+export async function sendAccountDeletedEmail(to: string): Promise<void> {
+  await send(
+    to,
+    'Sua conta Dash foi excluida',
+    `<p>Excluimos sua conta Dash e os dados ligados a ela, como pedido.</p>
+     <p>Registros de cobranca ficam guardados sem vinculo com voce pelo prazo exigido pela lei fiscal.</p>
+     <p>Os dashboards salvos no seu navegador continuam no seu aparelho ate voce apagar os dados do site.</p>`,
+  );
+}
+
 function brl(value: number): string {
   return `R$ ${value.toFixed(2).replace('.', ',')}`;
 }
