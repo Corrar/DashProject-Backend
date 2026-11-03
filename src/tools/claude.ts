@@ -19,7 +19,7 @@ function supportsServerFallback(model: string): boolean {
 }
 
 // Escreve o resumo em texto. Nunca loga o prompt nem a resposta (conteúdo da planilha).
-export async function generateNarrative(prompt: string): Promise<NarrativeResult> {
+export async function generateNarrative(system: string, prompt: string): Promise<NarrativeResult> {
   if (!env.anthropicApiKey) throw new HttpError(503, 'ia_nao_configurada');
   const model = env.anthropicModel;
   const fallback = supportsServerFallback(model);
@@ -33,6 +33,7 @@ export async function generateNarrative(prompt: string): Promise<NarrativeResult
       // Se o classificador de segurança recusar, a própria API refaz no modelo
       // recomendado para aquela categoria, na mesma chamada.
       ...(fallback ? { betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' as const } : {}),
+      system,
       messages: [{ role: 'user', content: prompt }],
     });
   } catch (e) {
