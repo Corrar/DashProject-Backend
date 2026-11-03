@@ -1,7 +1,7 @@
 # Testes de fumaça do backend
 
 Sobem a API em uma porta local e conferem as rotas de ponta a ponta. O Asaas,
-o Resend e o Gemini são simulados (o `fetch` é trocado no próprio script).
+o Resend e a Anthropic (IA) são simulados (o `fetch` é trocado no próprio script).
 Ficam fora do build (`tsconfig.json` só compila `src/`).
 
 | Script | Banco | Cobre |

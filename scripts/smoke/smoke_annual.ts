@@ -1,7 +1,7 @@
 process.env.DATABASE_URL = process.env.SMOKE_DATABASE_URL || 'postgres://postgres@localhost:55432/dash'; process.env.PG_SSL = 'false';
 process.env.APP_URL = 'https://app.test'; process.env.JWT_ACCESS_SECRET = 'secret'; process.env.NODE_ENV = 'development';
 process.env.PORT = '18790'; process.env.CORS_ORIGIN = 'https://app.test';
-process.env.ASAAS_API_KEY = 'k'; process.env.ASAAS_WEBHOOK_TOKEN = 'wh'; process.env.JOBS_SECRET = 'js'; process.env.GEMINI_API_KEY = 'g';
+process.env.ASAAS_API_KEY = 'k'; process.env.ASAAS_WEBHOOK_TOKEN = 'wh'; process.env.JOBS_SECRET = 'js'; process.env.ANTHROPIC_API_KEY = 'sk-ant-smoke';
 const B = require('path').resolve(__dirname, '../../src');
 const RUNID = Date.now(); const asaas: any[] = []; let chk = 0;
 const realFetch = globalThis.fetch;
@@ -12,7 +12,7 @@ const realFetch = globalThis.fetch;
     const out = s.endsWith('/checkouts') ? { id: 'chk_' + RUNID + '_' + (++chk), link: 'https://asaas.test/c/' + chk } : s.endsWith('/payments') ? { id: 'pay_job', invoiceUrl: 'https://asaas.test/i' } : { id: 'sub_1', deleted: true };
     return { ok: true, status: 200, text: async () => JSON.stringify(out), json: async () => out };
   }
-  if (s.includes('generativelanguage')) return { ok: true, status: 200, json: async () => ({ candidates: [{ content: { parts: [{ text: 'Narrativa teste' }] } }] }) };
+  if (s.includes('api.anthropic.com')) return new Response(JSON.stringify({ id: 'msg_smoke', type: 'message', role: 'assistant', model: 'claude-opus-5-5', stop_reason: 'end_turn', stop_details: null, content: [{ type: 'thinking', thinking: '', signature: 's' }, { type: 'text', text: 'Narrativa teste' }], usage: { input_tokens: 10, output_tokens: 5 } }), { status: 200, headers: { 'content-type': 'application/json' } });
   if (s.includes('resend.com')) return { ok: true, status: 200, text: async () => '{}' };
   return realFetch(u, i);
 };

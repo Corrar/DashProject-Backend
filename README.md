@@ -2,7 +2,7 @@
 
 Backend de produção para o Dash: **auth próprio** (JWT access + refresh rotativo, bcrypt),
 **Asaas** com **dois trilhos de cobrança** (cartão recorrente + Pix/boleto manual) e **3 tiers de plano**
-(`free` / `essencial` / `pro`), além de **ferramenta paga gateada com quota mensal de IA** (narrativa Gemini).
+(`free` / `essencial` / `pro`), além de **ferramenta paga gateada com quota mensal de IA** (resumo em texto pelo Claude, da Anthropic).
 Sem Supabase. Banco em **Neon**, deploy em **Render**.
 
 Stack: Node 20+, TypeScript strict, Express 5, `pg` (pool raw), zod, jsonwebtoken, bcryptjs, helmet.
@@ -79,7 +79,7 @@ webhooks).
 | POST | `/billing/cancel` | Bearer + pago | cancela a assinatura no Asaas (trilho cartão); responde `{ok, accessUntil}` — o acesso segue até o fim do período pago |
 | POST | `/billing/webhook` | token Asaas (header) | **única** fonte que escreve `plan` |
 | POST | `/jobs/billing-tick` | header `x-jobs-secret` | cron diário: gera renovações Pix/boleto, lembretes, downgrade e limpeza (sessões e links de e-mail vencidos há 30 dias, IDs de webhook com 90 dias) |
-| POST | `/tools/analyze` | Bearer | narrativa Gemini (quota mensal de IA do plano; Free = 1) |
+| POST | `/tools/analyze` | Bearer | resumo em texto pelo Claude a partir dos fatos calculados no navegador (quota mensal de IA do plano; Free = 1) |
 | POST | `/share` | Bearer + **Pro** | cria link público a partir do retrato do dashboard (`{title, payload}` → `{slug, url}`); 409 `limite_links` (50 ativos) |
 | GET  | `/share` | Bearer | links ativos do usuário |
 | DELETE | `/share/:slug` | Bearer | desativa um link próprio |
@@ -114,7 +114,7 @@ node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
 
 1. Suba este diretório num repo Git.
 2. Render → New → Blueprint (usa `render.yaml`) → conecta o repo.
-3. Preencha as env `sync:false` (DATABASE_URL do Neon, APP_URL, API_URL, CORS_ORIGIN, `ASAAS_API_KEY`, `ASAAS_ENV`, `ASAAS_WEBHOOK_TOKEN`, `JOBS_SECRET`, chaves Resend/Gemini). `RENEWAL_LEAD_DAYS` (5) e `GRACE_DAYS` (3) têm default.
+3. Preencha as env `sync:false` (DATABASE_URL do Neon, APP_URL, API_URL, CORS_ORIGIN, `ASAAS_API_KEY`, `ASAAS_ENV`, `ASAAS_WEBHOOK_TOKEN`, `JOBS_SECRET`, chaves Resend/Anthropic: `ANTHROPIC_API_KEY`). `RENEWAL_LEAD_DAYS` (5) e `GRACE_DAYS` (3) têm default.
 4. `JWT_ACCESS_SECRET` é gerado automaticamente pelo Render.
 5. Rode as migrations uma vez (local, apontando `DATABASE_URL` para o Neon de produção): `npm run migrate`.
 
@@ -135,4 +135,4 @@ a URL `https://<API_URL>/billing/webhook`, ative os eventos de pagamento e de as
 - **No Render free** isso é essencial: o serviço hiberna após 15 min e **não dispara timers internos** —
   o cron externo ao bater no endpoint também **acorda o serviço** para processar o tick.
 
-Detalhes de integração do frontend e setup de Asaas/Resend/Gemini: ver `CLAUDE_CODE.md`.
+Detalhes de integração do frontend e setup de Asaas/Resend/Anthropic: ver `CLAUDE_CODE.md`.

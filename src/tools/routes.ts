@@ -4,7 +4,7 @@ import { asyncHandler } from '../lib';
 import { requireAuth, type AuthedRequest } from '../auth/middleware';
 import { pool } from '../db';
 import { PLANS } from '../plans';
-import { generateNarrative } from './gemini';
+import { generateNarrative } from './claude';
 
 const router = express.Router();
 router.use(express.json({ limit: '256kb' }));
@@ -61,7 +61,7 @@ router.post('/analyze', requireAuth, asyncHandler(async (req: AuthedRequest, res
 
   const input = schema.parse(req.body);
   const result = await generateNarrative(buildPrompt(input));
-  // Só registra consumo quando o Gemini respondeu de fato.
+  // Só registra consumo quando a IA respondeu de fato.
   await pool.query('insert into ai_usage (user_id) values ($1)', [user.id]);
   res.json(result);
 }));

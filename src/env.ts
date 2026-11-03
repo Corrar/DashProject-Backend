@@ -56,7 +56,7 @@ export const env = {
   renewalLeadDays: int('RENEWAL_LEAD_DAYS', 5), // gera a próxima cobrança N dias antes do fim do período
   graceDays: int('GRACE_DAYS', 3),              // tolerância após o fim do período antes do downgrade
 
-  // Gemini (opcional no boot)
-  geminiApiKey: optional('GEMINI_API_KEY', ''),
-  geminiModel: optional('GEMINI_MODEL', 'gemini-2.5-flash'),
+  // Anthropic (opcional no boot: sem chave, /tools/analyze responde 503)
+  anthropicApiKey: optional('ANTHROPIC_API_KEY', ''),
+  anthropicModel: optional('ANTHROPIC_MODEL', 'claude-opus-5-5'),
 } as const;
